@@ -161,7 +161,9 @@ class ActorModelRayActor(BasePPORole):
         )
 
         # configure tokenizer
-        self.tokenizer = get_tokenizer(pretrain, actor.model, "left", strategy)
+        self.tokenizer = get_tokenizer(
+            pretrain, actor.model, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer
+        )
 
         strategy.print(actor)
         self.prepare_datasets()
@@ -169,7 +171,13 @@ class ActorModelRayActor(BasePPORole):
         args = strategy.args
 
         if args.enable_ema:
-            ema_model = deepcopy(actor)
+            ema_model = Actor(
+                pretrain,
+                use_flash_attention_2=strategy.args.flash_attn,
+                bf16=strategy.args.bf16,
+                load_in_4bit=strategy.args.load_in_4bit,
+                ds_config=strategy.get_ds_eval_config(offload=True),
+            )
         else:
             ema_model = None
 
@@ -180,7 +188,12 @@ class ActorModelRayActor(BasePPORole):
 
         # configure scheduler
         # strategy.accumulated_gradient --> train_batch_size // micro_train_batch_size
-        num_update_steps_per_episodes = len(self.prompts_dataloader) * args.max_epochs // strategy.accumulated_gradient
+        num_update_steps_per_episodes = (
+            int(len(self.prompts_dataloader) * (args.micro_rollout_batch_size / args.micro_train_batch_size))
+            * args.max_epochs
+            // strategy.accumulated_gradient
+        )
+
         max_steps = math.ceil(args.num_episodes * num_update_steps_per_episodes)
         self.max_steps = max_steps
 
@@ -205,7 +218,6 @@ class ActorModelRayActor(BasePPORole):
         if ema_model:
             ema_model._offload = True
             self.ema_model = strategy.prepare(ema_model, is_rlhf=True)
-            del ema_model._offload
         else:
             self.ema_model = None
 

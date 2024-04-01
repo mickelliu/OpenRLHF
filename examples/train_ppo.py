@@ -58,9 +58,9 @@ def train(args):
     )
 
     # configure tokenizer
-    tokenizer = get_tokenizer(args.pretrain, actor.model, "left", strategy)
-    get_tokenizer(args.reward_pretrain, critic, "left", strategy)
-    get_tokenizer(args.reward_pretrain, reward_model, "left", strategy)
+    tokenizer = get_tokenizer(args.pretrain, actor.model, "left", strategy, use_fast=not args.disable_fast_tokenizer)
+    get_tokenizer(args.reward_pretrain, critic, "left", strategy, use_fast=not args.disable_fast_tokenizer)
+    get_tokenizer(args.reward_pretrain, reward_model, "left", strategy, use_fast=not args.disable_fast_tokenizer)
 
     strategy.print(actor)
     strategy.print(critic)
@@ -79,7 +79,13 @@ def train(args):
     strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
 
     if args.enable_ema:
-        ema_model = deepcopy(actor)
+        ema_model = Actor(
+            args.pretrain,
+            use_flash_attention_2=args.flash_attn,
+            bf16=args.bf16,
+            load_in_4bit=args.load_in_4bit,
+            ds_config=strategy.get_ds_eval_config(offload=True),
+        )
     else:
         ema_model = None
 
@@ -135,7 +141,12 @@ def train(args):
         pretrain_dataloader = None
 
     # configure scheduler
-    num_update_steps_per_episodes = len(prompts_dataloader) * args.max_epochs // strategy.accumulated_gradient
+    num_update_steps_per_episodes = (
+        int(len(prompts_dataloader) * (args.micro_rollout_batch_size / args.micro_train_batch_size))
+        * args.max_epochs
+        // strategy.accumulated_gradient
+    )
+
     max_steps = math.ceil(args.num_episodes * num_update_steps_per_episodes)
 
     actor_scheduler = get_scheduler(
@@ -178,7 +189,6 @@ def train(args):
     if ema_model:
         ema_model._offload = True
         ema_model = strategy.prepare(ema_model, is_rlhf=True)
-        del ema_model._offload
 
     # load checkpoint
     if args.load_checkpoint:
@@ -308,6 +318,7 @@ if __name__ == "__main__":
     parser.add_argument("--target_modules", type=list, default=None)
     parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true")
+    parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
     parser.add_argument("--bos_token", type=str, default=None)
     parser.add_argument("--eos_token", type=str, default=None)
