@@ -255,7 +255,15 @@ class PPOTrainer(ABC):
         return status
 
     def training_step_actor(self, experience: Experience) -> Dict[str, float]:
-        self.actor.train()
+
+        # TODO: 
+        # reward whitening, advantage whitening. Reward normalizes the variance but not the mean
+        # EOS trick - reward/penalty
+        # dropout, eval mode during training
+        # check inferece temperature, should be ~0.7
+        # non-zero top p
+
+        self.actor.train()  
 
         num_actions = experience.action_mask.size(1)
         # actor loss
@@ -378,8 +386,8 @@ class PPOTrainer(ABC):
         if global_step % args.save_steps == 0:
             tag = f"global_step{global_step}"
             self.strategy.save_ckpt(
-                self.actor.model, os.path.join(args.ckpt_path, "_actor"), tag, args.max_ckpt_num, args.max_ckpt_mem
+                self.actor.model, os.path.join(args.save_path, "_actor"), tag
             )
             self.strategy.save_ckpt(
-                self.critic, os.path.join(args.ckpt_path, "_critic"), tag, args.max_ckpt_num, args.max_ckpt_mem
+                self.critic, os.path.join(args.save_path, "_critic"), tag
             )

@@ -1,0 +1,38 @@
+name: ray-rlhf
+channels:
+  - huggingface
+  - pytorch
+  - nvidia/label/cuda-11.8.0
+  - defaults
+  - conda-forge
+dependencies:
+  - python = 3.10
+  - pip
+
+  - bitsandbytes
+  - sentencepiece
+
+  - pytorch::pytorch >= 2.0
+  - pytorch::pytorch-mutex =*=*cuda*
+  - datasets
+  - tokenizers >= 0.13.3
+  - einops
+  - isort
+  - jsonlines
+  - loralib
+  - optimum
+  - wandb
+  - packaging
+  - peft
+  - torchmetrics
+  - tqdm
+  - transformers==4.38.2
+  - wheel
+  - nvidia/label/cuda-11.8.0::cuda-toolkit = 11.8
+  
+  - pip:
+      - accelerate
+      - deepspeed==0.13.2
+      - flash-attn==2.5.0
+      - ray[default]
+      - transformers_stream_generator

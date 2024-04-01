@@ -146,7 +146,7 @@ class NaiveExperienceMaker(ABC):
             generate_kwargs["gamma"],
             generate_kwargs["lambd"],
         )
-
+        ray.util.pdb.set_trace()
         info = {
             "kl": masked_mean(kl, action_mask, dim=-1),
             "reward": r,

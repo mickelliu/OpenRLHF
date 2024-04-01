@@ -42,6 +42,9 @@ def _validate_args(args):
 def train(args):
     _validate_args(args)
 
+    # ray debug mode
+    ray.init(local_mode=args.local_mode)
+
     # configure strategy
     strategy = get_strategy(args)
 
@@ -130,7 +133,11 @@ def train(args):
     vllm_engines = None
     if args.vllm_num_engines is not None:
         vllm_engines = create_vllm_engines(
-            args.vllm_num_engines, args.vllm_tensor_parallel_size, args.pretrain, args.seed
+            args.vllm_num_engines, 
+            args.vllm_tensor_parallel_size, 
+            args.pretrain, 
+            args.seed,
+            args.vllm_separate_node
         )
 
     # critic scheduler initialization depends on max_step, so we have to init critic after actor
@@ -227,6 +234,7 @@ if __name__ == "__main__":
     parser.add_argument("--zero_stage", type=int, default=2)
     parser.add_argument("--gradient_checkpointing", action="store_true", default=False)
     parser.add_argument("--bf16", action="store_true", default=False)
+    parser.add_argument("--vllm_separate_node", action="store_true", default=False)
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
     parser.add_argument("--kl_target", type=float, default=None)
@@ -270,6 +278,9 @@ if __name__ == "__main__":
         type=str,
         default="ppo_%s" % datetime.now().strftime("%m%dT%H:%M"),
     )
+
+    # ray debug
+    parser.add_argument("--local_mode", action="store_true", default=False)
 
     # performance tuning
     parser.add_argument("--perf", action="store_true", default=False)

@@ -176,9 +176,10 @@ class ActorModelRayActor(BasePPORole):
         # configure optimizer
         actor_optim = strategy.create_optimizer(
             actor, lr=args.actor_learning_rate, betas=(0.9, 0.95), weight_decay=args.l2
-        )
+        ) 
 
         # configure scheduler
+        # strategy.accumulated_gradient --> train_batch_size // micro_train_batch_size
         num_update_steps_per_episodes = len(self.prompts_dataloader) * args.max_epochs // strategy.accumulated_gradient
         max_steps = math.ceil(args.num_episodes * num_update_steps_per_episodes)
         self.max_steps = max_steps

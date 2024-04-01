@@ -45,26 +45,33 @@ class LLMRayActor:
         return self.llm.llm_engine._run_workers("update_weight", name, dtype, shape, empty_cache)
 
 
-def create_vllm_engines(num_engines: int, tensor_parallel_size: int, pretrain: str, seed: int):
+def create_vllm_engines(num_engines: int, tensor_parallel_size: int, pretrain: str, seed: int, vllm_separate_node: bool = False):
     vllm_engines = []
     for _ in range(num_engines):
         # When tensor_parallel_size=1, vLLM init model in LLMEngine directly, assign 1 GPU for it.
         num_gpus = int(tensor_parallel_size == 1)
         scheduling_strategy = None
+        resources = None
 
         if tensor_parallel_size > 1:
-            bundles = [{"GPU": 1, "CPU": 1}] * tensor_parallel_size
-            pg = placement_group(bundles)
+            if vllm_separate_node:
+                bundles = [{"GPU": 1, "CPU": 1, "inference_node": 0.1}] * tensor_parallel_size
+            else:
+                bundles = [{"GPU": 1, "CPU": 1}] * tensor_parallel_size
+            pg = placement_group(bundles, strategy="STRICT_PACK")
             ray.get(pg.ready())
 
             scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg, placement_group_capture_child_tasks=True, placement_group_bundle_index=0
             )
+        elif vllm_separate_node:
+            resources = {"inference_node": 0.1}
 
         vllm_engines.append(
             LLMRayActor.options(
                 num_cpus=1,
                 num_gpus=num_gpus,
+                resources=resources,
                 scheduling_strategy=scheduling_strategy,
             ).remote(
                 pretrain,
