@@ -8,13 +8,14 @@ from typing import Callable, Dict, List, Tuple
 import deepspeed
 import ray
 import torch
+import debugpy 
 from transformers.trainer import get_scheduler
 
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor
 from openrlhf.trainer import PPOTrainer
 from openrlhf.trainer.ppo_utils import Experience, RemoteExperienceMaker
-from openrlhf.utils import DeepspeedStrategy, blending_datasets, get_tokenizer
+from openrlhf.utils import DeepspeedStrategy, blending_datasets, get_tokenizer, invoke_debugpy
 from openrlhf.utils.deepspeed_utils import _z3_params_to_fetch
 from openrlhf.utils.distributed_util import init_process_group
 
@@ -159,12 +160,10 @@ class ActorModelRayActor(BasePPORole):
             target_modules=strategy.args.target_modules,
             ds_config=strategy.get_ds_train_config(is_actor=True),
         )
-
         # configure tokenizer
         self.tokenizer = get_tokenizer(
             pretrain, actor.model, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer
         )
-
         strategy.print(actor)
         self.prepare_datasets()
 
@@ -200,9 +199,11 @@ class ActorModelRayActor(BasePPORole):
         actor_scheduler = get_scheduler(
             "cosine",
             actor_optim,
-            num_warmup_steps=math.ceil(max_steps * 0.03),
+            num_warmup_steps=math.ceil(max_steps * strategy.args.warmup_ratio),
             num_training_steps=max_steps,
         )
+        
+        print(f"num_warmup_steps: {math.ceil(max_steps * strategy.args.warmup_ratio)}")
 
         if args.gradient_checkpointing:
             actor.gradient_checkpointing_enable(
@@ -319,12 +320,11 @@ class ActorModelRayActor(BasePPORole):
             do_sample=True,
             max_new_tokens=args.generate_max_len,
             max_length=args.max_len,
-            temperature=1,
+            temperature=args.rollout_temperature,
             top_p=args.top_p,
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
         )
-
         trainer.fit(self.prompts_dataloader, self.pretrain_dataloader, args)
 
     def save_model(self):

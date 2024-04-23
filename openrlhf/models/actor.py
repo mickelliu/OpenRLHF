@@ -126,7 +126,8 @@ class Actor(nn.Module):
             "pad_token_id": kwargs.get("pad_token_id"),
             "min_new_tokens": kwargs.get("min_new_tokens ", 1),
         }
-
+        if kwargs.get("pad_token", None):
+            generate_args["pad_token"] = kwargs.get("pad_token")
         if kwargs.get("max_new_tokens", None):
             generate_args["max_new_tokens"] = kwargs.get("max_new_tokens")
         if kwargs.get("max_length", None):

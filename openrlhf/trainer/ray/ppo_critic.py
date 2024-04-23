@@ -11,6 +11,7 @@ from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
 from openrlhf.trainer.ppo_utils import Experience
 from openrlhf.utils import DeepspeedStrategy, blending_datasets, get_tokenizer
+from openrlhf.utils.utils import invoke_debugpy
 
 from .launcher import BasePPORole
 
@@ -74,6 +75,7 @@ class CriticModelRayActor(BasePPORole):
             lora_alpha=strategy.args.lora_alpha,
             target_modules=strategy.args.target_modules,
             ds_config=strategy.get_ds_train_config(is_actor=False),
+            value_head_name=strategy.args.value_head_name
         )
         strategy.print(critic)
         strategy.print("reward normalization status: {}".format(strategy.args.normalize_reward))
@@ -90,7 +92,7 @@ class CriticModelRayActor(BasePPORole):
         critic_scheduler = get_scheduler(
             "cosine",
             critic_optim,
-            num_warmup_steps=math.ceil(max_steps * 0.03),
+            num_warmup_steps=math.ceil(max_steps * strategy.args.warmup_ratio),
             num_training_steps=max_steps,
         )
 

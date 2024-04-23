@@ -1,4 +1,5 @@
 set -x 
+export PYTHONPATH=/mmfs1/home/mickel7/code/OpenRLHF
 
 read -r -d '' training_commands <<EOF
 ../train_ppo.py \
@@ -8,14 +9,14 @@ read -r -d '' training_commands <<EOF
     --save_steps -1 \
     --logging_steps 1 \
     --eval_steps -1 \
-    --micro_train_batch_size 2 \
+    --micro_train_batch_size 1 \
     --train_batch_size 128 \
-    --micro_rollout_batch_size 4 \
+    --micro_rollout_batch_size 1 \
     --rollout_batch_size 1024 \
     --max_epochs 1 \
     --prompt_max_len 1024 \
     --generate_max_len 1024 \
-    --zero_stage 2 \
+    --zero_stage 3 \
     --bf16 \
     --actor_learning_rate 5e-7 \
     --critic_learning_rate 9e-6 \

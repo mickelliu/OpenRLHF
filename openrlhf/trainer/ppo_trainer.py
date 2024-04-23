@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, SwitchBalancingLoss, ValueLoss
 from openrlhf.models.utils import masked_mean
+from openrlhf.utils.utils import invoke_debugpy
 
 from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer
 
@@ -60,6 +61,7 @@ class PPOTrainer(ABC):
         init_kl_coef: float = 0.001,
         kl_target: float = None,
         kl_horizon: int = 10000,
+        value_loss_coef: float = 1.0,
         ptx_coef: float = 0,
         micro_train_batch_size: int = 8,
         buffer_limit: int = 0,
@@ -90,6 +92,7 @@ class PPOTrainer(ABC):
         self.dataloader_pin_memory = dataloader_pin_memory
         self.max_norm = max_norm
         self.ptx_coef = ptx_coef
+        self.value_loss_coef = value_loss_coef
         self.micro_train_batch_size = micro_train_batch_size
         self.kl_target = kl_target
         self.prompt_max_len = prompt_max_len
@@ -153,16 +156,15 @@ class PPOTrainer(ABC):
     ) -> None:
         self.prompts_dataloader = prompts_dataloader
         self.pretrain_dataloader = pretrain_dataloader
-
         update_timesteps = args.rollout_batch_size // (self.strategy.world_size * self.micro_rollout_batch_size)
         global_step = 1
-
+        # invoke_debugpy()
+        
         # get eval and save steps
         if args.eval_steps == -1:
             args.eval_steps = prompts_dataloader.__len__() // update_timesteps  # Evaluate once per epoch
         if args.save_steps == -1:
             args.save_steps = float("inf")  # do not save ckpt
-
         for episode in range(args.num_episodes):
             if isinstance(self.prompts_dataloader.sampler, DistributedSampler):
                 self.prompts_dataloader.sampler.set_epoch(episode)
@@ -181,6 +183,7 @@ class PPOTrainer(ABC):
                 self.replay_buffer.append(experience)
 
                 if global_step % update_timesteps == 0:
+                    print('training...')
                     torch.cuda.empty_cache()
                     self.replay_buffer.normalize("advantages", self.strategy)
                     status = self.ppo_train()
@@ -256,13 +259,6 @@ class PPOTrainer(ABC):
 
     def training_step_actor(self, experience: Experience) -> Dict[str, float]:
 
-        # TODO: 
-        # reward whitening, advantage whitening. Reward normalizes the variance but not the mean
-        # EOS trick - reward/penalty
-        # dropout, eval mode during training
-        # check inferece temperature, should be ~0.7
-        # non-zero top p
-
         self.actor.train()  
 
         num_actions = experience.action_mask.size(1)
@@ -272,11 +268,12 @@ class PPOTrainer(ABC):
         )
 
         # loss function
-        actor_loss = self.actor_loss_fn(
+        actor_loss, ratio = self.actor_loss_fn(
             action_log_probs,
             experience.action_log_probs,
             experience.advantages,
             action_mask=experience.action_mask,
+            return_ratio=True,
         )
         # mixtral
         if self.aux_loss:
@@ -317,6 +314,8 @@ class PPOTrainer(ABC):
         # status
         status = {
             "policy_loss": actor_loss.item(),
+            "advantages": masked_mean(experience.advantages, experience.action_mask, dim=-1).mean().item(),
+            "ratios_mean": masked_mean(ratio, experience.action_mask, dim=-1).mean().item(),
         }
         if self.pretrain_dataloader is not None:
             status["ptx_loss"] = ptx_loss.item()
@@ -351,14 +350,15 @@ class PPOTrainer(ABC):
             aux_loss = output.aux_loss
         else:
             aux_loss = 0
-        loss = critic_loss + aux_loss * self.args.aux_loss_coef
+
+        loss = self.value_loss_coef * critic_loss + self.value_loss_coef * aux_loss
         self.strategy.backward(loss, self.critic, self.critic_optim)
         self.strategy.optimizer_step(self.critic_optim, self.critic, self.critic_scheduler, name="critic")
 
         # status
         status = {
             "critic_loss": critic_loss.item(),
-            "values": masked_mean(values, experience.action_mask).item(),
+            "values": masked_mean(values, experience.action_mask,dim=-1).mean().item(),
         }
         return status
 
@@ -385,9 +385,16 @@ class PPOTrainer(ABC):
         # TODO: save best model on dev, use loss/perplexity/others on whole dev dataset as metric
         if global_step % args.save_steps == 0:
             tag = f"global_step{global_step}"
-            self.strategy.save_ckpt(
-                self.actor.model, os.path.join(args.save_path, "_actor"), tag
+        
+            self.strategy.save_model(
+                self.actor.model,
+                self.tokenizer,
+                os.path.join(args.save_path, "_actor_step_%d" % global_step),
             )
-            self.strategy.save_ckpt(
-                self.critic, os.path.join(args.save_path, "_critic"), tag
-            )
+
+            # self.strategy.save_ckpt(
+            #     self.actor.model, os.path.join(args.save_path, "_actor"), tag
+            # )
+            # self.strategy.save_ckpt(
+            #     self.critic, os.path.join(args.save_path, "_critic"), tag
+            # )

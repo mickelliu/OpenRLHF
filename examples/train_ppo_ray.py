@@ -15,6 +15,7 @@ from openrlhf.trainer.ray import (
     create_vllm_engines,
 )
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
+from openrlhf.utils.utils import invoke_debugpy
 
 
 # NOTE: reward function for multiple reward models, replace this with your own function!
@@ -42,9 +43,6 @@ def _validate_args(args):
 def train(args):
     _validate_args(args)
 
-    # ray debug mode
-    ray.init(local_mode=args.local_mode)
-
     # configure strategy
     strategy = get_strategy(args)
 
@@ -55,14 +53,24 @@ def train(args):
             args.actor_num_nodes == args.critic_num_nodes
             and args.actor_num_gpus_per_node == args.critic_num_gpus_per_node
         ), f"num_nodes and num_gpus_per_node must be the same when colocate actor and critic model."
+        assert (args.actor_gpu_type and args.critic_gpu_type), f"gpu_type must be the same when colocate actor and critic model."
 
         bundles = [
-            {"GPU": args.actor_num_gpus_per_node, "CPU": args.actor_num_gpus_per_node}
-            for _ in range(args.actor_num_nodes)
-        ]
+                {
+                    "GPU": args.actor_num_gpus_per_node,
+                    "CPU": args.actor_num_gpus_per_node * 2,
+                    str(args.actor_gpu_type): args.actor_num_gpus_per_node,
+
+                }
+                if args.actor_gpu_type and args.critic_gpu_type else
+                {
+                    "GPU": args.actor_num_gpus_per_node,
+                    "CPU": args.actor_num_gpus_per_node * 2
+                } for _ in range(args.actor_num_nodes)
+            ]
         pg = placement_group(bundles, strategy="STRICT_SPREAD")
         ray.get(pg.ready())
-
+    
     # NOTE(wuxibin): Why don't we allocate 0.5 gpu for each actor when colocate models?
     # Say we have 1 node with 4 GPUs, and num_gpus_per_node for each model is 4.
     # If we allocate 0.5 gpu for both actor and critic model, then gpu allocation is
@@ -78,6 +86,7 @@ def train(args):
         ActorModelRayActor,
         pg=pg,
         num_gpus_per_actor=0.75 if pg else 1,
+        gpu_type=args.actor_gpu_type,
     )
     critic_model = PPORayActorGroup(
         args.critic_num_nodes,
@@ -85,6 +94,7 @@ def train(args):
         CriticModelRayActor,
         pg=pg,
         num_gpus_per_actor=0.25 if pg else 1,
+        gpu_type=args.critic_gpu_type,
     )
 
     # if colocated, create placement group for reference and reward model explicitly.
@@ -93,10 +103,21 @@ def train(args):
         assert (
             args.ref_num_nodes == args.reward_num_nodes and args.ref_num_gpus_per_node == args.reward_num_gpus_per_node
         ), f"num_nodes and num_gpus_per_node must be the same when colocate reference and reward model."
+        assert (args.ref_gpu_type and args.reward_gpu_type), f"gpu_type must be the same when colocate reference and reward model."
 
         bundles = [
-            {"GPU": args.ref_num_gpus_per_node, "CPU": args.ref_num_gpus_per_node} for _ in range(args.ref_num_nodes)
-        ]
+                {
+                    "GPU": args.ref_num_gpus_per_node,
+                    "CPU": args.ref_num_gpus_per_node * 2,
+                    str(args.ref_gpu_type): args.ref_num_gpus_per_node
+                }
+                if args.ref_gpu_type and args.reward_gpu_type else
+                {
+                    "GPU": args.ref_num_gpus_per_node,
+                    "CPU": args.ref_num_gpus_per_node * 2
+                } for _ in range(args.ref_num_nodes)
+            ]
+
         pg = placement_group(bundles, strategy="STRICT_SPREAD")
         ray.get(pg.ready())
 
@@ -106,6 +127,7 @@ def train(args):
         ReferenceModelRayActor,
         pg=pg,
         num_gpus_per_actor=0.75 if pg else 1,
+        gpu_type=args.ref_gpu_type,
     )
 
     # multiple reward models
@@ -119,6 +141,7 @@ def train(args):
                 RewardModelRayActor,
                 pg=pg,
                 num_gpus_per_actor=0.25 if pg else 1,
+                gpu_type=args.reward_gpu_type,
             )
         )
 
@@ -137,7 +160,7 @@ def train(args):
             args.vllm_tensor_parallel_size, 
             args.pretrain, 
             args.seed,
-            args.vllm_separate_node
+            gpu_type=args.vllm_gpu_type,
         )
 
     # critic scheduler initialization depends on max_step, so we have to init critic after actor
@@ -145,7 +168,6 @@ def train(args):
     max_steps = ray.get(actor_model._actor_handlers[0].max_steps.remote())
     refs.extend(critic_model.async_init_model_from_pretrained(strategy, reward_pretrains[0], max_steps))
     ray.get(refs)
-
     # train actor and critic mdoel
     refs = actor_model.async_fit_actor_model(
         critic_model, ref_model, reward_models, reward_fn=reward_fn, vllm_engines=vllm_engines
@@ -214,10 +236,13 @@ if __name__ == "__main__":
     parser.add_argument("--max_epochs", type=int, default=1)
     parser.add_argument("--prompt_max_len", type=int, default=1024)
     parser.add_argument("--generate_max_len", type=int, default=1024)
+    parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--max_len", type=int, default=None)
     parser.add_argument("--max_samples", type=int, default=100000)
     parser.add_argument("--max_norm", type=float, default=1.0)
     parser.add_argument("--l2", type=float, default=0.0)
+    parser.add_argument("--value_loss_coef", type=float, default=1.0)
+    parser.add_argument("--value_head_name", type=str, default="value_head", help="value head name in critic and reward model")
     parser.add_argument("--ptx_coef", type=float, default=0.05)
     parser.add_argument("--eps_clip", type=float, default=0.2)
     parser.add_argument("--value_clip", type=float, default=0.2)
@@ -227,6 +252,7 @@ if __name__ == "__main__":
     parser.add_argument("--train_batch_size", type=int, default=128)
     parser.add_argument("--load_checkpoint", action="store_true", default=False)
     parser.add_argument("--normalize_reward", action="store_true", default=False)
+    parser.add_argument("--rollout_temperature", type=float, default=1.0)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
 
@@ -252,7 +278,9 @@ if __name__ == "__main__":
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--target_modules", type=list, default=None)
-    parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
+    # parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
+    # parser.add_argument("--input_template", type=str, default="<|user|> {} <|assistant|>\n")
+    parser.add_argument("--input_template", type=str, default="<|user|>\n{}\n<|assistant|>\n")
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true")
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
@@ -280,8 +308,12 @@ if __name__ == "__main__":
         default="ppo_%s" % datetime.now().strftime("%m%dT%H:%M"),
     )
 
-    # ray debug
-    parser.add_argument("--local_mode", action="store_true", default=False)
+    # special gpu resources
+    parser.add_argument("--critic_gpu_type", type=str, default=None)
+    parser.add_argument("--actor_gpu_type", type=str, default=None)
+    parser.add_argument("--ref_gpu_type", type=str, default=None)
+    parser.add_argument("--reward_gpu_type", type=str, default=None) 
+    parser.add_argument("--vllm_gpu_type", type=str, default=None)
 
     # performance tuning
     parser.add_argument("--perf", action="store_true", default=False)

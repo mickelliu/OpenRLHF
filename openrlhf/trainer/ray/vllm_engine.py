@@ -45,7 +45,11 @@ class LLMRayActor:
         return self.llm.llm_engine._run_workers("update_weight", name, dtype, shape, empty_cache)
 
 
-def create_vllm_engines(num_engines: int, tensor_parallel_size: int, pretrain: str, seed: int, vllm_separate_node: bool = False):
+def create_vllm_engines(num_engines: int, 
+                        tensor_parallel_size: int, 
+                        pretrain: str, 
+                        seed: int, 
+                        gpu_type: str):
     vllm_engines = []
     for _ in range(num_engines):
         # When tensor_parallel_size=1, vLLM init model in LLMEngine directly, assign 1 GPU for it.
@@ -54,22 +58,19 @@ def create_vllm_engines(num_engines: int, tensor_parallel_size: int, pretrain: s
         resources = None
 
         if tensor_parallel_size > 1:
-            if vllm_separate_node:
-                bundles = [{"GPU": 1, "CPU": 1, "inference_node": 0.1}] * tensor_parallel_size
-            else:
-                bundles = [{"GPU": 1, "CPU": 1}] * tensor_parallel_size
+            bundles = [{"GPU": 1, "CPU": 2, gpu_type: 1} if gpu_type else {"GPU": 1, "CPU": 2} for _ in range(tensor_parallel_size)]
             pg = placement_group(bundles, strategy="STRICT_PACK")
             ray.get(pg.ready())
-
             scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg, placement_group_capture_child_tasks=True, placement_group_bundle_index=0
             )
-        elif vllm_separate_node:
-            resources = {"inference_node": 0.1}
+        elif gpu_type:
+            # When tensor_parallel_size=1, we can use GPU type to specify the GPU type.
+            resources = {gpu_type: num_gpus}
 
         vllm_engines.append(
             LLMRayActor.options(
-                num_cpus=1,
+                num_cpus=2,
                 num_gpus=num_gpus,
                 resources=resources,
                 scheduling_strategy=scheduling_strategy,
