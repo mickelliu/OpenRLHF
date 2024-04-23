@@ -187,11 +187,16 @@ class PPOTrainer(ABC):
                     torch.cuda.empty_cache()
                     self.replay_buffer.normalize("advantages", self.strategy)
                     status = self.ppo_train()
-                    self.replay_buffer.clear()
-                    torch.cuda.empty_cache()
                     self.kl_ctl.update(status["kl"], args.rollout_batch_size)
                     # logs/checkpoints
-                    self.save_logs_and_checkpoints(args, global_step // update_timesteps, pbar, status)
+                    self.save_logs_and_checkpoints(args, 
+                                                   global_step, 
+                                                   global_step//update_timesteps, 
+                                                   pbar, 
+                                                   status,
+                                                   replay_buffer=self.replay_buffer.items)
+                    self.replay_buffer.clear()
+                    torch.cuda.empty_cache()
 
                 pbar.update()
                 global_step = global_step + 1
@@ -222,9 +227,9 @@ class PPOTrainer(ABC):
 
                 # for DP
                 # weighted mean for kl
-                status["kl"] *= status["response_length"]
+                status["kl_per_token"] *= status["response_length"]
                 status = self.strategy.all_reduce(status)
-                status["kl"] /= status["response_length"]
+                status["kl_per_token"] /= status["response_length"]
 
                 status_list.append(status)
                 short_status = {
@@ -233,7 +238,7 @@ class PPOTrainer(ABC):
                     "ret": status["return"],
                     "glen": status["response_length"],
                     "tlen": status["total_length"],
-                    "kl": status["kl"],
+                    "kl_t": status["kl_per_token"],
                 }
                 if "critic_loss" in status:
                     short_status["cri"] = status["critic_loss"]
@@ -315,7 +320,7 @@ class PPOTrainer(ABC):
         status = {
             "policy_loss": actor_loss.item(),
             "advantages": masked_mean(experience.advantages, experience.action_mask, dim=-1).mean().item(),
-            "ratios_mean": masked_mean(ratio, experience.action_mask, dim=-1).mean().item(),
+            "ratios": masked_mean(ratio, experience.action_mask, dim=-1).mean().item(),
         }
         if self.pretrain_dataloader is not None:
             status["ptx_loss"] = ptx_loss.item()
@@ -362,34 +367,76 @@ class PPOTrainer(ABC):
         }
         return status
 
-    def save_logs_and_checkpoints(self, args, global_step, step_bar, logs_dict={}):
-        if global_step % args.logging_steps == 0:
+    def save_logs_and_checkpoints(self, args, global_step, iter_num, step_bar, logs_dict={}, **kwargs):
+        
+        if iter_num % args.logging_steps == 0:
             # step bar
             step_bar.set_postfix(logs_dict)
             # wandb
             if self._wandb is not None and self.strategy.is_rank_0():
+                import wandb
+
                 logs = {
-                    "train/%s" % k: v
-                    for k, v in {
-                        **logs_dict,
-                        "global_step": global_step,
-                    }.items()
+                    "train/global_step": iter_num,
+                    "train/data_step": global_step,
                 }
+                _lookup_table = {
+                    # objective
+                    "kl": "objective/kl",
+                    "kl_per_token": "objective/kl_per_token",
+                    # env
+                    "reward": "env/reward_mean",
+                    "return": "env/return_mean",                    
+                    # policy
+                    "policy_loss": "policy/policy_loss",
+                    "response_length": "policy/response_length_mean",
+                    "total_length": "policy/total_length_mean",
+                    "ratios": "policy/ratios_mean",
+                    "advantages": "policy/advantages_mean",
+                    "prewhitten_advantage": "policy/prewhitten_advantage_mean",
+                    # value
+                    "critic_loss": "loss/critic_loss",
+                    "values": "critic/values",
+                }
+                for k, v in logs_dict.items():
+                    if k in _lookup_table:
+                        logs[f"train/{_lookup_table[k]}"] = v
+
+                if kwargs.get("replay_buffer", None) is not None:
+                    replay_buffer = kwargs["replay_buffer"]
+                    rows = []
+                    for item in replay_buffer:
+                        p = item.action_mask.sum()
+                        assert p == int(item.info['response_length'])
+                        rows.append(
+                            [self.tokenizer.decode(item.sequences[:-p]), 
+                             self.tokenizer.decode(item.sequences[-p:]), 
+                             item.info["reward"]]
+                             )
+                    logs['game_log'] = wandb.Table(columns=['query', 'response', 'reward'], rows=rows)
+
+                # logs = {
+                #     "train/%s" % k: v
+                #     for k, v in {
+                #         **logs_dict,
+                #         "global_step": global_step,
+                #     }.items()
+                # }
                 self._wandb.log(logs)
 
         # TODO: Add evaluation mechanism for PPO
-        if global_step % args.eval_steps == 0:
+        if iter_num % args.eval_steps == 0:
             # self.evaluate(self.eval_dataloader, global_step)
             pass
         # save ckpt
         # TODO: save best model on dev, use loss/perplexity/others on whole dev dataset as metric
-        if global_step % args.save_steps == 0:
-            tag = f"global_step{global_step}"
+        if iter_num % args.save_steps == 0:
+            tag = f"_actor_step_{iter_num}"
         
             self.strategy.save_model(
                 self.actor.model,
                 self.tokenizer,
-                os.path.join(args.save_path, "_actor_step_%d" % global_step),
+                os.path.join(args.save_path, tag),
             )
 
             # self.strategy.save_ckpt(
