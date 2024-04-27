@@ -243,7 +243,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             action_mask.to("cpu"),
         )
 
-        rm_sequences_cpu, rm_attention_mask_cpu, _ = (
+        rm_sequences_cpu, rm_attention_mask_cpu, rm_action_mask_cpu = (
             rm_sequences.to("cpu"),
             rm_attention_mask.to("cpu"),
             rm_action_mask.to("cpu"),
@@ -253,7 +253,10 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         base_action_log_probs_ref = self.initial_model.forward.remote(sequences_cpu, num_actions, attention_mask_cpu)
 
         # values
-        value_ref = self.critic.forward.remote(sequences_cpu, action_mask_cpu, attention_mask_cpu)
+        value_ref = self.critic.forward.remote(
+            sequences_cpu, 
+            action_mask_cpu, 
+            attention_mask_cpu)
 
         # rewards
         r_refs = []
@@ -275,7 +278,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         rewards = [r.to(device) for r in rewards]
         r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
 
-        reward, kl = compute_reward(
+        total_reward, kl = compute_reward(
             r,
             self.kl_ctl.value,
             action_log_probs,
@@ -284,17 +287,17 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         )
         advantage, returns = self.get_advantages_and_returns(
             value,
-            reward,
+            total_reward,
             action_mask,
             generate_kwargs["gamma"],
             generate_kwargs["lambd"],
         )
 
         info = {
-            "token_kl": masked_mean(kl, action_mask, dim=-1) / self.kl_ctl.value,
+            "kl_per_token": masked_mean(kl, action_mask, dim=-1),
             "reward": r,
-            "kl": masked_mean(kl, action_mask, dim=-1),
-            "return": reward.sum(dim=-1),
+            "kl": (kl * action_mask).sum(dim=-1),
+            "return": total_reward.sum(dim=-1),
             "response_length": action_mask.float().sum(dim=-1),
             "total_length": attention_mask.float().sum(dim=-1),
             "prewhitten_advantage": masked_mean(advantage, action_mask, dim=-1),
@@ -323,6 +326,20 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         experience_cpu = deepcopy(experience)
         experience_cpu.to_device("cpu")
         self._ref = self.critic.append.remote(experience_cpu)
+
+        # critic_experience = Experience(
+        #     rm_sequences,
+        #     action_log_probs,
+        #     value,
+        #     returns,
+        #     advantage,
+        #     rm_attention_mask,
+        #     rm_action_mask,
+        #     info,
+        # )
+        # critic_experience.to_device("cpu")
+        # self._ref = self.critic.append.remote(critic_experience)
+
 
         self.actor.train()  # reset model state
         return experience
@@ -375,11 +392,11 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
     def _generate_vllm(self, prompts: List[str], **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         from vllm import SamplingParams
 
-        # testing tokenizer
-        from transformers import LlamaTokenizer
-        tulu_tokenizer = self.tokenizer
-        ultrarm_tokenizer = LlamaTokenizer.from_pretrained("openbmb/UltraRM-13b")
-        for i in range(len(prompts)): assert tulu_tokenizer.encode(prompts[i]) == ultrarm_tokenizer.encode(prompts[i]), "Tokenizer mismatch!"
+        # # testing tokenizer
+        # from transformers import LlamaTokenizer
+        # tulu_tokenizer = self.tokenizer
+        # ultrarm_tokenizer = LlamaTokenizer.from_pretrained("openbmb/UltraRM-13b")
+        # for i in range(len(prompts)): assert tulu_tokenizer.encode(prompts[i]) == ultrarm_tokenizer.encode(prompts[i]), "Tokenizer mismatch!"
 
         pad_token_id, eos_token_id, unk_token_id = self.tokenizer.pad_token_id, self.tokenizer.eos_token_id, self.tokenizer.unk_token_id
 
