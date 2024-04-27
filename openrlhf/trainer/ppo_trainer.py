@@ -324,6 +324,7 @@ class PPOTrainer(ABC):
         }
         if self.pretrain_dataloader is not None:
             status["ptx_loss"] = ptx_loss.item()
+
         for k, v in experience.info.items():
             if k == "kl":
                 status[k] = (
@@ -331,6 +332,7 @@ class PPOTrainer(ABC):
                 ).item()
             else:
                 status[k] = v.mean().item()
+                
         return status
 
     def training_step_critic(self, experience: Experience) -> Dict[str, float]:
@@ -395,7 +397,7 @@ class PPOTrainer(ABC):
                     "advantages": "policy/advantages_mean",
                     "prewhitten_advantage": "policy/prewhitten_advantage_mean",
                     # value
-                    "critic_loss": "loss/critic_loss",
+                    "critic_loss": "critic/critic_loss",
                     "values": "critic/values",
                 }
                 for k, v in logs_dict.items():
@@ -407,7 +409,7 @@ class PPOTrainer(ABC):
                     rows = []
                     for item in replay_buffer:
                         p = item.action_mask.sum()
-                        assert p == int(item.info['response_length'])
+                        assert p == int(item.info['response_length']), f"p: {p}, response_length: {item.info['response_length']}"
                         rows.append(
                             [self.tokenizer.decode(item.sequences[:-p]), 
                              self.tokenizer.decode(item.sequences[-p:]), 
@@ -415,13 +417,6 @@ class PPOTrainer(ABC):
                              )
                     logs['game_log'] = wandb.Table(columns=['query', 'response', 'reward'], rows=rows)
 
-                # logs = {
-                #     "train/%s" % k: v
-                #     for k, v in {
-                #         **logs_dict,
-                #         "global_step": global_step,
-                #     }.items()
-                # }
                 self._wandb.log(logs)
 
         # TODO: Add evaluation mechanism for PPO
