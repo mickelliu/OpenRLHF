@@ -17,6 +17,8 @@ def preprocess_data(data, input_template=None, input_key=None) -> str:
                     prompt.replace("prompter:", "\nHuman: ").replace("assistant:", "\nAssistant: ") + "\nAssistant: "
                 )
             # input_template = None  # do not modified with input template again
+        elif exist_and_not_none(data, "instruction"):
+            prompt = data["instruction"]
         # Open-Orca/OpenOrca
         elif exist_and_not_none(data, "system_prompt") and exist_and_not_none(data, "response"):
             prompt = data["system_prompt"] + "\n" + data["question"]
