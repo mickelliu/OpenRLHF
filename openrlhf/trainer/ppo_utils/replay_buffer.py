@@ -6,7 +6,7 @@ from typing import List, Optional
 import torch
 import torch.nn.functional as F
 
-from openrlhf.models.utils import masked_mean
+from openrlhf.models.utils import masked_mean, masked_normalize
 
 from .experience_maker import Experience
 
@@ -212,3 +212,6 @@ class NaiveReplayBuffer(ABC):
 
         for i, item in enumerate(self):
             setattr(item, attribute, (items[i] - mean) * rstd)
+
+        # for i, item in enumerate(self):
+        #     setattr(item, attribute, masked_normalize(items[i], action_masks[i], dim=-1, eps=1e-8))
