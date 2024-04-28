@@ -46,14 +46,13 @@ def train(args):
     # configure strategy
     strategy = get_strategy(args)
 
-    # if colocated, create placement group for actor and critic model explicitly.
+    # if colocated, create placement group for actor and ref model explicitly.
     pg = None
-    if args.colocate_actor_critic:
+    if args.colocate_actor_ref:
         assert (
-            args.actor_num_nodes == args.critic_num_nodes
-            and args.actor_num_gpus_per_node == args.critic_num_gpus_per_node
-        ), f"num_nodes and num_gpus_per_node must be the same when colocate actor and critic model."
-        assert (args.actor_gpu_type and args.critic_gpu_type), f"gpu_type must be the same when colocate actor and critic model."
+            args.actor_num_nodes == args.ref_num_nodes and args.actor_num_gpus_per_node == args.ref_num_gpus_per_node
+        ), f"num_nodes and num_gpus_per_node must be the same when colocate actor and ref model."
+        assert (args.actor_gpu_type and args.ref_gpu_type), f"gpu_type must be the same when colocate actor and ref model."
 
         bundles = [
                 {
@@ -62,7 +61,7 @@ def train(args):
                     str(args.actor_gpu_type): args.actor_num_gpus_per_node,
 
                 }
-                if args.actor_gpu_type and args.critic_gpu_type else
+                if args.actor_gpu_type and args.ref_gpu_type else
                 {
                     "GPU": args.actor_num_gpus_per_node,
                     "CPU": args.actor_num_gpus_per_node * 2
@@ -73,12 +72,12 @@ def train(args):
     
     # NOTE(wuxibin): Why don't we allocate 0.5 gpu for each actor when colocate models?
     # Say we have 1 node with 4 GPUs, and num_gpus_per_node for each model is 4.
-    # If we allocate 0.5 gpu for both actor and critic model, then gpu allocation is
-    #   |actor|actor|actor|actor|critic|critic|critic|critic|
+    # If we allocate 0.5 gpu for both actor and ref model, then gpu allocation is
+    #   |actor|actor|actor|actor|  ref | ref  | ref  | ref |
     #   |GPU0 |GPU0 |GPU1 |GPU1 | GPU2 | GPU2 | GPU3 | GPU3 |
     #
     # So 0.75/0.25 gpu is a tricky to let Ray spread all models evenly on all gpus.
-    #   |actor|critic|actor|critic|actor|critic|actor|critic|
+    #   |actor| ref  |actor| ref  |actor| ref  |actor|ref  |
     #   |GPU0 | GPU0 |GPU1 | GPU1 |GPU2 | GPU2 |GPU3 | GPU3 |
     actor_model = PPORayActorGroup(
         args.actor_num_nodes,
@@ -88,10 +87,11 @@ def train(args):
         num_gpus_per_actor=0.75 if pg else 1,
         gpu_type=args.actor_gpu_type,
     )
-    critic_model = PPORayActorGroup(
-        args.critic_num_nodes,
-        args.critic_num_gpus_per_node,
-        CriticModelRayActor,
+
+    ref_model = PPORayActorGroup(
+        args.ref_num_nodes,
+        args.ref_num_gpus_per_node,
+        ReferenceModelRayActor,
         pg=pg,
         num_gpus_per_actor=0.25 if pg else 1,
         gpu_type=args.critic_gpu_type,
@@ -99,32 +99,33 @@ def train(args):
 
     # if colocated, create placement group for reference and reward model explicitly.
     pg = None
-    if args.colocate_ref_reward:
+    if args.colocate_critic_reward:
         assert (
-            args.ref_num_nodes == args.reward_num_nodes and args.ref_num_gpus_per_node == args.reward_num_gpus_per_node
-        ), f"num_nodes and num_gpus_per_node must be the same when colocate reference and reward model."
-        assert (args.ref_gpu_type and args.reward_gpu_type), f"gpu_type must be the same when colocate reference and reward model."
+            args.critic_num_nodes == args.reward_num_nodes
+            and args.critic_num_gpus_per_node == args.reward_num_gpus_per_node
+        ), f"num_nodes and num_gpus_per_node must be the same when colocate critic and reward model."
+        assert (args.critic_gpu_type and args.reward_gpu_type), f"gpu_type must be the same when colocate critic and reward model."
 
         bundles = [
                 {
-                    "GPU": args.ref_num_gpus_per_node,
-                    "CPU": args.ref_num_gpus_per_node * 2,
-                    str(args.ref_gpu_type): args.ref_num_gpus_per_node
+                    "GPU": args.critic_num_gpus_per_node,
+                    "CPU": args.critic_num_gpus_per_node * 2,
+                    str(args.critic_gpu_type): args.critic_num_gpus_per_node
                 }
-                if args.ref_gpu_type and args.reward_gpu_type else
+                if args.critic_gpu_type and args.reward_gpu_type else
                 {
-                    "GPU": args.ref_num_gpus_per_node,
-                    "CPU": args.ref_num_gpus_per_node * 2
+                    "GPU": args.critic_num_gpus_per_node,
+                    "CPU": args.critic_num_gpus_per_node * 2
                 } for _ in range(args.ref_num_nodes)
             ]
 
         pg = placement_group(bundles, strategy="STRICT_SPREAD")
         ray.get(pg.ready())
 
-    ref_model = PPORayActorGroup(
-        args.ref_num_nodes,
-        args.ref_num_gpus_per_node,
-        ReferenceModelRayActor,
+    critic_model = PPORayActorGroup(
+        args.critic_num_nodes,
+        args.critic_num_gpus_per_node,
+        CriticModelRayActor,
         pg=pg,
         num_gpus_per_actor=0.75 if pg else 1,
         gpu_type=args.ref_gpu_type,
@@ -182,27 +183,27 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ref_num_nodes", type=int, default=1, help="number of nodes for reference")
-    parser.add_argument("--ref_num_gpus_per_node", type=int, default=1, help="number of gpus per node for reference")
+    parser.add_argument("--ref_num_gpus_per_node", type=int, default=8, help="number of gpus per node for reference")
     parser.add_argument("--reward_num_nodes", type=int, default=1, help="number of nodes for reward model")
     parser.add_argument(
-        "--reward_num_gpus_per_node", type=int, default=1, help="number of gpus per node for reward model"
+        "--reward_num_gpus_per_node", type=int, default=8, help="number of gpus per node for reward model"
     )
     parser.add_argument(
-        "--colocate_ref_reward",
+        "--colocate_actor_ref",
         action="store_true",
         default=False,
-        help="whether to colocate reference and reward model, if true, they will share same gpus.",
+        help="whether to colocate reference and actor model, if true, they will share same gpus.",
     )
 
     parser.add_argument("--actor_num_nodes", type=int, default=1, help="number of nodes for actor")
-    parser.add_argument("--actor_num_gpus_per_node", type=int, default=1, help="number of gpus per node for actor")
+    parser.add_argument("--actor_num_gpus_per_node", type=int, default=8, help="number of gpus per node for actor")
     parser.add_argument("--critic_num_nodes", type=int, default=1, help="number of nodes for critic")
-    parser.add_argument("--critic_num_gpus_per_node", type=int, default=1, help="number of gpus per node for critic")
+    parser.add_argument("--critic_num_gpus_per_node", type=int, default=8, help="number of gpus per node for critic")
     parser.add_argument(
-        "--colocate_actor_critic",
+        "--colocate_critic_reward",
         action="store_true",
         default=False,
-        help="whether to colocate actor and critic model, if true, they will share same gpus.",
+        help="whether to colocate critic and reward model, if true, they will share same gpus.",
     )
 
     # optional vLLM for text generation
@@ -271,6 +272,7 @@ if __name__ == "__main__":
     parser.add_argument("--enable_ema", action="store_true", help="Enable EMA checkpoint for the model.")
     parser.add_argument("--zpg", type=int, default=1, help="ZeRO++ max partition size")
     parser.add_argument("--adam_offload", action="store_true", default=False)
+    parser.add_argument("--ref_reward_offload", action="store_true", default=False)
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
     parser.add_argument("--flash_attn", action="store_true", default=False)
     parser.add_argument("--aux_loss_coef", type=float, default=0)

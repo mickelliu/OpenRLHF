@@ -1,9 +1,6 @@
 <div align="center">
-<p align="center">
-<img alt="" src="./docs/logo.png" style="display: inline-block; height: 160px" />
-</p>
+    <img alt="OpenRLHF logo" src="./docs/logo.png" style="height: 160px;" />
 </div>
-
 <div align="center">
 <p align="center">
       <a href="https://github.com/openllmai/OpenRLHF/graphs/contributors">
@@ -27,6 +24,8 @@
 </div>
 
 <hr>
+
+<span>[ English | <a href="README_zh.md">中文</a> ]</span>
 
 OpenRLHF is a high-performance RLHF framework built on Ray, DeepSpeed and HF Transformers:
 
@@ -234,7 +233,7 @@ ninja --version
 echo $? # output: 0
 # install flash-attn: may take some time.
 # For network error: you can download specified version from https://github.com/Dao-AILab/flash-attention/releases.
-pip install flash-attn==2.4.2
+pip install flash-attn==2.5.0
 ./build_openrlhf.sh
 # enjoy it!
 ```
