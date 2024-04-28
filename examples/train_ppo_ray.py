@@ -166,7 +166,8 @@ def train(args):
     # critic scheduler initialization depends on max_step, so we have to init critic after actor
     # TODO: use first reward model as critic model
     max_steps = ray.get(actor_model._actor_handlers[0].max_steps.remote())
-    refs.extend(critic_model.async_init_model_from_pretrained(strategy, reward_pretrains[0], max_steps))
+    critic_pretrain = args.critic_pretrain if args.critic_pretrain else reward_pretrains[0]
+    refs.extend(critic_model.async_init_model_from_pretrained(strategy, critic_pretrain, max_steps))
     ray.get(refs)
     # train actor and critic mdoel
     refs = actor_model.async_fit_actor_model(
@@ -229,6 +230,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--pretrain", type=str, default=None)
     parser.add_argument("--reward_pretrain", type=str, default=None)
+    parser.add_argument("--critic_pretrain", type=str, default=None)
     parser.add_argument("--save_path", type=str, default="./ckpt")
     parser.add_argument("--num_episodes", type=int, default=1)
     parser.add_argument("--rollout_batch_size", type=int, default=512)
