@@ -94,7 +94,7 @@ def train(args):
         ReferenceModelRayActor,
         pg=pg,
         num_gpus_per_actor=0.25 if pg else 1,
-        gpu_type=args.critic_gpu_type,
+        gpu_type=args.ref_gpu_type,
     )
 
     # if colocated, create placement group for reference and reward model explicitly.
@@ -128,7 +128,7 @@ def train(args):
         CriticModelRayActor,
         pg=pg,
         num_gpus_per_actor=0.75 if pg else 1,
-        gpu_type=args.ref_gpu_type,
+        gpu_type=args.critic_gpu_type,
     )
 
     # multiple reward models

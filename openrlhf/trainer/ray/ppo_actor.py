@@ -326,13 +326,3 @@ class ActorModelRayActor(BasePPORole):
             eos_token_id=self.tokenizer.eos_token_id,
         )
         trainer.fit(self.prompts_dataloader, self.pretrain_dataloader, args)
-
-    def save_model(self):
-        args = self.strategy.args
-
-        # save model checkpoint after fitting on only rank0
-        self.strategy.save_model(
-            self.ema_model if args.enable_ema else self.actor,
-            self.tokenizer,
-            args.save_path,
-        )

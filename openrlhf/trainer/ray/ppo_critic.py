@@ -77,6 +77,10 @@ class CriticModelRayActor(BasePPORole):
             ds_config=strategy.get_ds_train_config(is_actor=False),
             value_head_name=strategy.args.value_head_name
         )
+        # configure tokenizer
+        self.tokenizer = get_tokenizer(
+            pretrain, critic.model, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer
+        )
         strategy.print(critic)
         strategy.print("reward normalization status: {}".format(strategy.args.normalize_reward))
         strategy.print("mean: {}, std {}".format(critic.mean, critic.std))
@@ -156,3 +160,11 @@ class CriticModelRayActor(BasePPORole):
         self.trainer.replay_buffer.clear()
         torch.cuda.empty_cache()
         return status
+
+    def save_model(self, path: str=None):
+        # save model checkpoint after fitting on only rank0
+        self.strategy.save_model(
+            self.critic,
+            self.tokenizer,
+            path if path else self.strategy.args.save_path, 
+        )

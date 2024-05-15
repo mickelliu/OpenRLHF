@@ -426,17 +426,21 @@ class PPOTrainer(ABC):
         # save ckpt
         # TODO: save best model on dev, use loss/perplexity/others on whole dev dataset as metric
         if iter_num % args.save_steps == 0:
-            tag = f"_actor_step_{iter_num}"
-        
+            actor_tag = f"_actor_step_{iter_num}"
+            critic_tag = f"_critic_step_{iter_num}"
+
             self.strategy.save_model(
                 self.actor.model,
                 self.tokenizer,
-                os.path.join(args.save_path, tag),
+                os.path.join(args.save_path, actor_tag),
             )
+            
+            ray.get(self.critic.save_model.remote(path=os.path.join(args.save_path, critic_tag)))
 
             # self.strategy.save_ckpt(
             #     self.actor.model, os.path.join(args.save_path, "_actor"), tag
             # )
+
             # self.strategy.save_ckpt(
             #     self.critic, os.path.join(args.save_path, "_critic"), tag
             # )
