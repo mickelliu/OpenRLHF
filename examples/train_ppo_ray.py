@@ -15,7 +15,7 @@ from openrlhf.trainer.ray import (
     create_vllm_engines,
 )
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
-from openrlhf.utils.utils import invoke_debugpy
+from openrlhf.utils.utils import debug_here
 
 
 # NOTE: reward function for multiple reward models, replace this with your own function!
@@ -52,14 +52,13 @@ def train(args):
         assert (
             args.actor_num_nodes == args.ref_num_nodes and args.actor_num_gpus_per_node == args.ref_num_gpus_per_node
         ), f"num_nodes and num_gpus_per_node must be the same when colocate actor and ref model."
-        assert (args.actor_gpu_type and args.ref_gpu_type), f"gpu_type must be the same when colocate actor and ref model."
+        assert (args.actor_gpu_type == args.ref_gpu_type), f"gpu_type must be the same when colocate actor and ref model."
 
         bundles = [
                 {
                     "GPU": args.actor_num_gpus_per_node,
                     "CPU": args.actor_num_gpus_per_node * 2,
                     str(args.actor_gpu_type): args.actor_num_gpus_per_node,
-
                 }
                 if args.actor_gpu_type and args.ref_gpu_type else
                 {
@@ -104,7 +103,7 @@ def train(args):
             args.critic_num_nodes == args.reward_num_nodes
             and args.critic_num_gpus_per_node == args.reward_num_gpus_per_node
         ), f"num_nodes and num_gpus_per_node must be the same when colocate critic and reward model."
-        assert (args.critic_gpu_type and args.reward_gpu_type), f"gpu_type must be the same when colocate critic and reward model."
+        assert (args.critic_gpu_type == args.reward_gpu_type), f"gpu_type must be the same when colocate critic and reward model."
 
         bundles = [
                 {
@@ -263,7 +262,6 @@ if __name__ == "__main__":
     parser.add_argument("--zero_stage", type=int, default=2)
     parser.add_argument("--gradient_checkpointing", action="store_true", default=False)
     parser.add_argument("--bf16", action="store_true", default=False)
-    parser.add_argument("--vllm_separate_node", action="store_true", default=False)
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
     parser.add_argument("--kl_target", type=float, default=None)
@@ -285,6 +283,7 @@ if __name__ == "__main__":
     # parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
     # parser.add_argument("--input_template", type=str, default="<|user|> {} <|assistant|>\n")
     parser.add_argument("--input_template", type=str, default="<|user|>\n{}\n<|assistant|>\n")
+    parser.add_argument("--ultrarm_shift_template", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true")
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
@@ -299,6 +298,7 @@ if __name__ == "__main__":
     # evaluation
     parser.add_argument("--eval_steps", type=int, default=-1)
     parser.add_argument("--save_steps", type=int, default=-1)
+    parser.add_argument("--keep_latest", action="store_true", default=False)
     parser.add_argument("--logging_steps", type=int, default=1)
 
     # wandb pamameters
@@ -321,6 +321,9 @@ if __name__ == "__main__":
 
     # performance tuning
     parser.add_argument("--perf", action="store_true", default=False)
+
+    # eos trick
+    parser.add_argument("--eos_penalty", action="store_true", default=False)
 
     args = parser.parse_args()
     train(args)

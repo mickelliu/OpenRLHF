@@ -144,7 +144,7 @@ def blending_datasets(
     else:
         return train_dataset
 
-def invoke_debugpy(port=5678):
+def debug_here(port=5678):
     import debugpy
     debugpy.listen(("localhost", port))
     print("\n" + f"Waiting for vscode debugger to attach to port {port} ... ", end="")

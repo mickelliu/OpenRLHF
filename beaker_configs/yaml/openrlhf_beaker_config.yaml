@@ -1,0 +1,44 @@
+# version: v2
+# budget: SomeBudget
+# description: My Experiment
+# tasks:
+#   # We only have one step in our experiment, so there's only one entry in this list
+#   - name: training
+#     image:
+#       # You will want to replace `username` below with your Beaker username
+#       beaker: username/my-experiment
+#     command: [python, -u, main.py]
+#     result:
+#       # Beaker will capture anything that's written to this location and store it in the results
+#       # dataset. This location is required to be a directory, not a file.
+#       path: /output
+#     resources:
+#       gpuCount: 1
+#     context:
+#       priority: normal
+#     constraints:
+#       cluster: [ ai2/general-cirrascale ]
+
+version: v2
+budget: SomeBudget
+description: this is an example of a full spec
+tasks:
+- name: a-task-name
+  image:
+    beaker: busybox:latest
+  command: [ '/bin/sh', '-c' ]
+  arguments: ['echo Hello $GREETING']
+  envVars:
+  - name: GREETING
+    value: beaker 
+  result:
+    path: '/output'
+  resources:
+    cpuCount: 4
+    gpuCount: 1
+    memory: 2.5 GiB
+    sharedMemory: 2.5 GiB # default is 5 GiB
+  context:
+    priority: high 
+  constraints:
+    cluster: [ ai2/general-cirrascale ]

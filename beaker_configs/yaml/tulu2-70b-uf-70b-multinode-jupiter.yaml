@@ -1,0 +1,90 @@
+version: v2
+budget: ai2/oe-adapt
+description: tulu2-70b tulu2-ufrm-70b openrlhf experiments - v1.1 - gpu only
+tasks:
+- name: tulu2-70b-uf-13b-openrlhf-ppo
+  replicas: 5
+  leaderSelection: true
+  hostNetworking: true
+  propagateFailure: false
+  synchronizedStartTimeout: 6h
+  image:
+    beaker: mickell/openrlhf-torch2.3-cuda12.3-v2
+  command: [ '/bin/sh', '-c' ]
+  arguments: [
+    "cd $REPO_PATH && \
+    source ./beaker_configs/ray_node_setup.sh && \
+    python3 examples/train_ppo_ray.py \
+    --ref_num_nodes 1 \
+    --ref_num_gpus_per_node 4 \
+    --reward_num_nodes 1 \
+    --reward_num_gpus_per_node 4 \
+    --critic_num_nodes 1 \
+    --critic_num_gpus_per_node 8 \
+    --actor_num_nodes 2 \
+    --actor_num_gpus_per_node 8 \
+    --vllm_num_engines 4 \
+    --vllm_tensor_parallel_size 2 \
+    --pretrain /models/tulu-2-70b \
+    --critic_pretrain /models/tulu-2-ufrm-70b \
+    --reward_pretrain /models/tulu-2-ufrm-70b \
+    --save_path /output/tulu-2-70b-ppo-$CURRENT_DATETIME \
+    --value_loss_coef 1.0 \
+    --micro_train_batch_size 4 \
+    --train_batch_size 128 \
+    --micro_rollout_batch_size 4 \
+    --rollout_batch_size 128 \
+    --max_epochs 1 \
+    --prompt_max_len 1024 \
+    --generate_max_len 1024 \
+    --rollout_temperature 0.7 \
+    --actor_learning_rate 1e-6 \
+    --critic_learning_rate 1e-6 \
+    --init_kl_coef 0.025 \
+    --prompt_data /train_dataset \
+    --prompt_data_probs 1.0 \
+    --actor_init_on_gpu \
+    --gradient_checkpointing \
+    --flash_attn \
+    --zero_stage 3 \
+    --bf16 \
+    --grad_accum_dtype bf16 \
+    --save_steps -1 \
+    --pad_token '<unk>' \
+    --warmup_ratio 0.05 \
+    --value_head_name score \
+    --use_wandb $WANDB_API_KEY \
+    --wandb_run_name tulu-2-70b-ppo-70b-uf-v1.00 \
+    --perf"
+  ]
+  envVars:
+  - name: WANDB_API_KEY
+    secret: MICKEL_WANDB_API_KEY
+  - name: REPO_PATH
+    value: /code
+  datasets:
+  - mountPath: /code
+    source:
+      beaker: mickell/openrlhf-code-v2
+  - mountPath: /train_dataset
+    source:
+      beaker: mickell/ultrafeedback-binarized-preferences-cleaned
+  - mountPath: /models/tulu-2-70b
+    source:
+      beaker: mickell/tulu-2-70b
+  - mountPath: /models/tulu-2-ufrm-70b
+    source:
+      beaker: mickell/tulu-2-ufrm-70b
+  result:
+    path: '/output'
+  resources:
+    gpuCount: 8
+  context:
+    priority: high
+    preemptible: true
+  constraints:
+    cluster: [ 
+      ai2/jupiter-cirrascale-2,
+      # ai2/pluto-cirrascale
+        # ai2/general-cirrascale-a100-80g-ib, 
+      ]

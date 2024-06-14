@@ -1,8 +1,8 @@
 set -x 
-export PYTHONPATH=/mmfs1/home/mickel7/code/OpenRLHF
-export CUDA_HOME=/mmfs1/gscratch/h2lab/mickel/Miniconda3/envs/ray-rlhf
-export LD_LIBRARY_PATH=/mmfs1/gscratch/h2lab/mickel/Miniconda3/envs/ray-rlhf/lib:$LD_LIBRARY_PATH
-export PATH="$CUDA_HOME/bin:$PATH"
+# export PYTHONPATH=/mmfs1/home/mickel7/code/OpenRLHF
+# export CUDA_HOME=/mmfs1/gscratch/h2lab/mickel/Miniconda3/envs/ray-rlhf
+# export LD_LIBRARY_PATH=/mmfs1/gscratch/h2lab/mickel/Miniconda3/envs/ray-rlhf/lib:$LD_LIBRARY_PATH
+# export PATH="$CUDA_HOME/bin:$PATH"
 
 python3 examples/train_ppo_ray.py \
     --ref_num_nodes 1 \

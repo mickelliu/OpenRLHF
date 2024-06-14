@@ -3,6 +3,7 @@ import os.path
 from abc import ABC
 from typing import Any, Callable, Dict, List, Optional, Union
 
+import time
 import ray
 import torch
 import torch.nn as nn
@@ -13,7 +14,7 @@ from tqdm import tqdm
 
 from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, SwitchBalancingLoss, ValueLoss
 from openrlhf.models.utils import masked_mean
-from openrlhf.utils.utils import invoke_debugpy
+from openrlhf.utils.utils import debug_here
 
 from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer
 
@@ -127,6 +128,9 @@ class PPOTrainer(ABC):
         )
         self.replay_buffer = NaiveReplayBuffer(micro_train_batch_size, buffer_limit, buffer_cpu_offload)
 
+        self.eos_penalty = strategy.args.eos_penalty
+        self.ultrarm_shift_template = strategy.args.ultrarm_shift_template
+
         self._wandb = None
         if self.strategy.args.use_wandb and self.strategy.is_rank_0():
             import wandb
@@ -156,10 +160,10 @@ class PPOTrainer(ABC):
     ) -> None:
         self.prompts_dataloader = prompts_dataloader
         self.pretrain_dataloader = pretrain_dataloader
+        additional_config = {'eos_penalty': self.eos_penalty, 'ultrarm_shift_template': self.ultrarm_shift_template}
         update_timesteps = args.rollout_batch_size // (self.strategy.world_size * self.micro_rollout_batch_size)
-        global_step = 1
-        # invoke_debugpy()
-        
+        step = 1
+
         # get eval and save steps
         if args.eval_steps == -1:
             args.eval_steps = prompts_dataloader.__len__() // update_timesteps  # Evaluate once per epoch
@@ -175,31 +179,31 @@ class PPOTrainer(ABC):
             )
 
             for rand_prompts in self.prompts_dataloader:
-                experience = self.experience_maker.make_experience(rand_prompts, **self.generate_kwargs)
+                experience = self.experience_maker.make_experience(rand_prompts, **(self.generate_kwargs|additional_config))
                 # print prompt/answer in each update step
-                if global_step % update_timesteps == 0:
+                if step % update_timesteps == 0:
                     output = self.tokenizer.batch_decode(experience.sequences, skip_special_tokens=True)
                     self.strategy.print(output[0])
                 self.replay_buffer.append(experience)
 
-                if global_step % update_timesteps == 0:
+                if step % update_timesteps == 0:
                     print('training...')
                     torch.cuda.empty_cache()
                     self.replay_buffer.normalize("advantages", self.strategy)
                     status = self.ppo_train()
+                    torch.cuda.empty_cache()
                     self.kl_ctl.update(status["kl"], args.rollout_batch_size)
                     # logs/checkpoints
                     self.save_logs_and_checkpoints(args, 
-                                                   global_step, 
-                                                   global_step//update_timesteps, 
-                                                   pbar, 
-                                                   status,
+                                                   data_step=step * (self.strategy.world_size * self.micro_rollout_batch_size), # data_step is the number of data points trained
+                                                   global_step=(step // update_timesteps), # global_step is the number of updates (iterations)
+                                                   step_bar=pbar, 
+                                                   logs_dict=status,
                                                    replay_buffer=self.replay_buffer.items)
-                    self.replay_buffer.clear()
-                    torch.cuda.empty_cache()
+                    self.replay_buffer.clear() # clear replay buffer after we log stuff
 
                 pbar.update()
-                global_step = global_step + 1
+                step += 1
 
     def ppo_train(self):
         # replay buffer may be empty at first, we should rebuild at each training
@@ -212,7 +216,7 @@ class PPOTrainer(ABC):
             collate_fn=self.replay_buffer.collate_fn,
         )
         device = torch.cuda.current_device()
-
+        
         status_list = []
         status_mean = {}
         for epoch in range(self.max_epochs):
@@ -369,9 +373,9 @@ class PPOTrainer(ABC):
         }
         return status
 
-    def save_logs_and_checkpoints(self, args, global_step, iter_num, step_bar, logs_dict={}, **kwargs):
+    def save_logs_and_checkpoints(self, args, data_step, global_step, step_bar, logs_dict={}, **kwargs):
         
-        if iter_num % args.logging_steps == 0:
+        if global_step % args.logging_steps == 0:
             # step bar
             step_bar.set_postfix(logs_dict)
             # wandb
@@ -379,8 +383,8 @@ class PPOTrainer(ABC):
                 import wandb
 
                 logs = {
-                    "train/global_step": iter_num,
-                    "train/data_step": global_step,
+                    "train/global_step": global_step,
+                    "train/data_step": data_step,
                 }
                 _lookup_table = {
                     # objective
@@ -399,6 +403,13 @@ class PPOTrainer(ABC):
                     # value
                     "critic_loss": "critic/critic_loss",
                     "values": "critic/values",
+                    # perf
+                    "generate_time": "perf/generate_time",
+                    "actor_time": "perf/log_prob_time",
+                    "wait_time": "perf/post_process_time",
+                    "actor_train_time": "perf/actor_train_time",
+                    "critic_train_time": "perf/critic_train_time",
+                    "broadcast_time": "perf/broadcast_time",
                 }
                 for k, v in logs_dict.items():
                     if k in _lookup_table:
@@ -420,22 +431,27 @@ class PPOTrainer(ABC):
                 self._wandb.log(logs)
 
         # TODO: Add evaluation mechanism for PPO
-        if iter_num % args.eval_steps == 0:
+        if global_step % args.eval_steps == 0:
             # self.evaluate(self.eval_dataloader, global_step)
             pass
         # save ckpt
         # TODO: save best model on dev, use loss/perplexity/others on whole dev dataset as metric
-        if iter_num % args.save_steps == 0:
-            actor_tag = f"_actor_step_{iter_num}"
-            critic_tag = f"_critic_step_{iter_num}"
+        if global_step % args.save_steps == 0:
+            actor_tag = f"_actor_step_{global_step}"
+            critic_tag = f"_critic_step_{global_step}"
+
+            if args.keep_latest:
+                # delete previous ckpt in save_path
+                os.system(f"rm -rf {os.path.join(args.save_path, 'checkpoints', '_actor_step_*')}")
+                os.system(f"rm -rf {os.path.join(args.save_path, 'checkpoints', '_critic_step_*')}")
 
             self.strategy.save_model(
                 self.actor.model,
                 self.tokenizer,
-                os.path.join(args.save_path, actor_tag),
+                os.path.join(args.save_path, "checkpoints", actor_tag),
             )
             
-            ray.get(self.critic.save_model.remote(path=os.path.join(args.save_path, critic_tag)))
+            ray.get(self.critic.save_model.remote(path=os.path.join(args.save_path, "checkpoints", critic_tag)))
 
             # self.strategy.save_ckpt(
             #     self.actor.model, os.path.join(args.save_path, "_actor"), tag

@@ -1,4 +1,5 @@
 import math
+import time
 from typing import Dict, Optional
 
 import ray
@@ -11,7 +12,7 @@ from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
 from openrlhf.trainer.ppo_utils import Experience
 from openrlhf.utils import DeepspeedStrategy, blending_datasets, get_tokenizer
-from openrlhf.utils.utils import invoke_debugpy
+from openrlhf.utils.utils import debug_here
 
 from .launcher import BasePPORole
 
@@ -156,7 +157,9 @@ class CriticModelRayActor(BasePPORole):
         """Train critic model with the replay buffer."""
         torch.cuda.empty_cache()
         self.critic.train()
+        start = time.time()
         status = self.trainer.ppo_train()
+        status['critic_train_time'] = time.time() - start
         self.trainer.replay_buffer.clear()
         torch.cuda.empty_cache()
         return status

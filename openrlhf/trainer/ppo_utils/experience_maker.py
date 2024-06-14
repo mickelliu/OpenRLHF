@@ -13,7 +13,7 @@ from tqdm import tqdm
 from openrlhf.models.actor import Actor
 from openrlhf.models.utils import compute_reward, masked_mean
 from openrlhf.utils.logging import init_logger
-from openrlhf.utils.utils import invoke_debugpy
+from openrlhf.utils.utils import debug_here
 
 logger = init_logger(__name__)
 
@@ -223,16 +223,16 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         self.vllm_engines = vllm_engines
         
     @torch.no_grad()
-    def make_experience(self, prompts: Union[str, List[str]], **generate_kwargs) -> Experience:
+    def make_experience(self, prompts: Union[str, List[str]], **kwargs) -> Experience:
         self.actor.eval()
         device = torch.cuda.current_device()
     
         # generate sequence
         start = time.time()
-        (sequences, attention_mask, action_mask), (rm_sequences, rm_attention_mask, rm_action_mask) = (
-            self._generate_local(prompts, **generate_kwargs)
+        (sequences, attention_mask, action_mask, eos_penalty_flags), (rm_sequences, rm_attention_mask, rm_action_mask, _) = (
+            self._generate_local(prompts, **kwargs)
             if self.vllm_engines is None
-            else self._generate_vllm(prompts, **generate_kwargs)
+            else self._generate_vllm(prompts, **kwargs)
         )
         generate_time = time.time() - start
 
@@ -284,6 +284,10 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         base_action_log_probs, value = base_action_log_probs.to(device), value.to(device)
         rewards = [r.to(device) for r in rewards]
         r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
+        print(f'eos_penalty ---> {kwargs.get("eos_penalty", False)}')
+        if kwargs.get("eos_penalty", False):
+            eos_penalty_flags = torch.tensor(eos_penalty_flags, device=device)
+            r = torch.where(eos_penalty_flags, -10.0 * eos_penalty_flags.float(), r)
 
         total_reward, kl = compute_reward(
             r,
@@ -296,8 +300,8 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             value,
             total_reward,
             action_mask,
-            generate_kwargs["gamma"],
-            generate_kwargs["lambd"],
+            kwargs["gamma"],
+            kwargs["lambd"],
         )
 
         info = {
@@ -309,8 +313,8 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             "total_length": attention_mask.float().sum(dim=-1),
             "prewhitten_advantage": masked_mean(advantage, action_mask, dim=-1),
         }
-        print(f"eos_reward: {info['reward']}")
-        print(f"kl: {info['kl']}")
+        # print(f"eos_reward: {info['reward']}")
+        # print(f"kl: {info['kl']}")
         # print(f"padded_seq_len_policy_vs_rm: {sequences_cpu.shape[1]}, {rm_sequences_cpu.shape[1]}")
         if self.strategy.args.perf:
             batch_size = 1 if isinstance(prompts, str) else len(prompts)
@@ -346,7 +350,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         # )
         # critic_experience.to_device("cpu")
         # self._ref = self.critic.append.remote(critic_experience)
-
 
         self.actor.train()  # reset model state
         return experience
@@ -384,8 +387,9 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         # swap tokens
         rm_outputs = []
         for output in self.tokenizer.batch_decode(outputs):
-            assert "<|user|> " in output and " <|assistant|>\n" in output, f"output: {output}"
-            output = output.replace("<|user|> ", "Human: ", 1).replace("<|assistant|>\n", "Assistant: ",1)
+            if kwargs.get("ultrarm_shift_template"):
+                assert "<|user|> " in output and " <|assistant|>\n" in output, f"output: {output}"
+                output = output.replace("<|user|> ", "Human: ", 1).replace("<|assistant|>\n", "Assistant: ",1)
             rm_outputs.append(output)
         rm_outputs = self.tokenizer(rm_outputs, return_tensors="pt", padding=True, add_special_tokens=False)['input_ids']
 
@@ -427,18 +431,24 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             prompt_token_ids.append(input_ids[i][pad_index:].tolist())
         outputs = ray.get(llm.generate.remote(sampling_params=sampling_params, prompt_token_ids=prompt_token_ids))
 
-        # # TODO: remove this stupid shit
-        for i in range(len(prompts)):
-            assert "<|user|>\n" in prompts[i] and "\n<|assistant|>\n" in prompts[i]
-            prompts[i] = prompts[i].replace("<|user|>\n", "Human: ", 1).rsplit("\n<|assistant|>\n", 1)[0] + "\nAssistant: "
-        rm_input_ids = self.tokenize_fn(prompts, self.prompt_max_len, device="cpu")["input_ids"]
-        rm_pad_indices = (rm_input_ids != pad_token_id).to(dtype=torch.int).argmax(dim=-1)
+        if kwargs.get("ultrarm_shift_template", False):
+            for i in range(len(prompts)):
+                assert "<|user|>\n" in prompts[i] and "\n<|assistant|>\n" in prompts[i]
+                prompts[i] = prompts[i].replace("<|user|>\n", "Human: ", 1).rsplit("\n<|assistant|>\n", 1)[0] + "\nAssistant: "
+            rm_input_ids = self.tokenize_fn(prompts, self.prompt_max_len, device="cpu")["input_ids"]
+            rm_pad_indices = (rm_input_ids != pad_token_id).to(dtype=torch.int).argmax(dim=-1)
+        else:
+            # just create new copies
+            rm_input_ids = input_ids
+            rm_pad_indices = pad_indices
+            
         rm_prompt_token_ids = []
         for i, pad_index in enumerate(rm_pad_indices.numpy()):
             rm_prompt_token_ids.append(rm_input_ids[i][pad_index:].tolist())
 
         def pad_batched_sequences(prompts_tokens, outputs):
             assert len(prompts_tokens) == len(outputs)
+            eos_penalty_flags = [False for _ in outputs]
             # NOTE: concat all outputs to following format:
             #
             # | [PAD] [PAD] token token token | token token [EOS] [PAD] |
@@ -457,7 +467,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 max_output_len = max(max_output_len, len(output_token_ids))
         
             sequences = []
-            for prompt_tokens, output in zip(prompts_tokens, outputs):
+            for i, (prompt_tokens, output) in enumerate(zip(prompts_tokens, outputs)):
                 # left padding input
                 input_len = len(prompt_tokens)
                 input_ids = [pad_token_id] * (max_input_len - input_len) + prompt_tokens
@@ -468,6 +478,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 if output_ids[output_len - 1] != eos_token_id:
                     assert output_len == max_output_len
                     output_ids[-1] = eos_token_id
+                    eos_penalty_flags[i] = True # penalize for missing EOS token
 
                 # concat input and output
                 sequences.append(input_ids + output_ids)
@@ -476,10 +487,9 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             sequences, attention_mask, action_mask = self.actor.process_sequences(
                 sequences, max_input_len, eos_token_id, pad_token_id
             )
-            return sequences.to("cuda"), attention_mask.to("cuda"), action_mask.to("cuda")
+            return sequences.to("cuda"), attention_mask.to("cuda"), action_mask.to("cuda"), eos_penalty_flags
         
         return pad_batched_sequences(prompts_tokens=prompt_token_ids, outputs=outputs), pad_batched_sequences(prompts_tokens=rm_prompt_token_ids, outputs=outputs)
-        # return pad_batched_sequences(prompts_tokens=rm_prompt_token_ids, outputs=outputs)
 
     def flush(self):
         "Ensure all experience has been send to critic"

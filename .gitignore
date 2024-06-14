@@ -147,6 +147,8 @@ core
 .vscode
 .nfs*
 *jianh*
-wandb/*
+wandb
 ckpt/*
 local_tests/*
+resources
+ckpt

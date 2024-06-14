@@ -10,7 +10,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.utils import DeepspeedStrategy, get_tokenizer
-from openrlhf.utils.utils import invoke_debugpy
+from openrlhf.utils.utils import debug_here
 
 
 class DistributedTorchRayActor:
@@ -150,7 +150,7 @@ class PPORayActorGroup:
     ) -> None:
         self._num_nodes = num_nodes
         self._num_gpus_per_node = num_gpus_per_node
-        self._num_cpus_per_node = num_gpus_per_node
+        # self._num_cpus_per_node = num_gpus_per_node * 2
         self._gpu_type = gpu_type
         self.ray_actor_type = ray_actor_type
         self._initiate_actors(pg, num_gpus_per_actor)
@@ -160,34 +160,21 @@ class PPORayActorGroup:
         # Use placement group to lock resources for models of same type
         if self._num_gpus_per_node > 1 and pg is None:
             bundles = [
-                {
-                    "GPU": self._num_gpus_per_node,
-                    "CPU": self._num_cpus_per_node,
-                    str(self._gpu_type): self._num_gpus_per_node
-                }
-                if self._gpu_type else
-                {
-                    "GPU": self._num_gpus_per_node,
-                    "CPU": self._num_cpus_per_node
-                }
-                for _ in range(self._num_nodes)
+                {"GPU": self._num_gpus_per_node, "CPU": self._num_gpus_per_node} for _ in range(self._num_nodes)
             ]
             pg = placement_group(bundles, strategy="STRICT_SPREAD")
             ray.get(pg.ready())
         if pg:
             master_actor = self.ray_actor_type.options(
-                num_cpus=self._num_cpus_per_node,
+                num_cpus=num_gpus_per_actor,
                 num_gpus=num_gpus_per_actor,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
-                    placement_group=pg, 
-                    placement_group_bundle_index=0),
-                resources={str(self._gpu_type): num_gpus_per_actor} if self._gpu_type else {},
+                    placement_group=pg, placement_group_bundle_index=0
+                ),
             ).remote(world_size, 0, 0, None, None)
         else:
             master_actor = self.ray_actor_type.options(
-                num_cpus=self._num_cpus_per_node, 
-                num_gpus=num_gpus_per_actor,
-                resources={str(self._gpu_type): num_gpus_per_actor} if self._gpu_type else {},
+                num_cpus=num_gpus_per_actor, num_gpus=num_gpus_per_actor
             ).remote(world_size, 0, 0, None, None)
         self._actor_handlers = [master_actor]
 
@@ -198,9 +185,8 @@ class PPORayActorGroup:
                 local_rank = rank % self._num_gpus_per_node
                 if pg:
                     worker_actor = self.ray_actor_type.options(
-                        num_cpus=self._num_cpus_per_node,
+                        num_cpus=num_gpus_per_actor,
                         num_gpus=num_gpus_per_actor,
-                        resources={str(self._gpu_type): num_gpus_per_actor} if self._gpu_type else {},
                         scheduling_strategy=PlacementGroupSchedulingStrategy(
                             placement_group=pg,
                             placement_group_bundle_index=rank // self._num_gpus_per_node,
@@ -208,12 +194,10 @@ class PPORayActorGroup:
                     ).remote(world_size, rank, local_rank, master_addr, master_port)
                 else:
                     worker_actor = self.ray_actor_type.options(
-                        num_cpus=self._num_cpus_per_node, 
-                        num_gpus=num_gpus_per_actor,
-                        resources={str(self._gpu_type): num_gpus_per_actor} if self._gpu_type else {},
+                        num_cpus=num_gpus_per_actor, num_gpus=num_gpus_per_actor
                     ).remote(world_size, rank, local_rank, master_addr, master_port)
                 self._actor_handlers.append(worker_actor)
-
+                
     def async_init_model_from_pretrained(
         self,
         *args,
