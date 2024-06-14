@@ -54,7 +54,7 @@ tasks:
     --adam_offload \
     --pad_token '<unk>' \
     --warmup_ratio 0.05 \
-    --value_head_name regression_head \
+    --head_prefix regression_head \
     --use_wandb $WANDB_API_KEY \
     --wandb_run_name tulu-2-70b-ppo-test \
     --ultrarm_shift_template \

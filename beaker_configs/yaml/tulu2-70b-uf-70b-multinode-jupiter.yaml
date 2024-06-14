@@ -52,7 +52,7 @@ tasks:
     --save_steps -1 \
     --pad_token '<unk>' \
     --warmup_ratio 0.05 \
-    --value_head_name score \
+    --head_prefix score \
     --use_wandb $WANDB_API_KEY \
     --wandb_run_name tulu-2-70b-ppo-70b-uf-v1.00 \
     --perf"

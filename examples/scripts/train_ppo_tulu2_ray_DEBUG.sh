@@ -45,7 +45,7 @@ python3 examples/train_ppo_ray.py \
     --adam_offload \
     --pad_token "<unk>" \
     --warmup_ratio 0.05 \
-    --value_head_name regression_head \
+    --head_prefix regression_head \
     --colocate_actor_ref \
     --use_wandb $WANDB_API_KEY \
     --wandb_run_name tulu-2-7b-ppo-DEBUG \

@@ -36,9 +36,4 @@ python3 examples/train_ppo_ray.py \
     --adam_offload \
     --gradient_checkpointing \
     --flash_attn \
-    --bf16 \
-    --use_wandb ead86be5d8bada37193b2b3d6d7d9cc52aac151e \
-    # --vllm_rtx6k \
-    # --colocate_ref_reward \
-    # --colocate_actor_critic \
-    
+    --bf16    
