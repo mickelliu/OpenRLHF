@@ -1,51 +1,38 @@
 from typing import Callable
+
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from .utils import exist_and_not_none, zero_pad_sequences
+
+from .utils import exist_and_not_none, process_multi_turn_dialogue, zero_pad_sequences
 
 
-def preprocess_data(data, input_template=None, input_key=None, output_key=None):
+def preprocess_data(data, input_template=None, input_key=None, output_key=None, apply_chat_template=None):
     # custom dataset
-    if input_key and output_key:
+    if input_key:
         prompt = data[input_key]
-        target = data[output_key]
+        response = data[output_key]
+
+        if apply_chat_template:
+            prompt = apply_chat_template(data[input_key][:-1], tokenize=False, add_generation_prompt=True)
+            response = apply_chat_template(data[input_key], tokenize=False)[len(prompt) :]
+            input_template = None
     else:
-        # Dahoas/full-hh-rlhf
-        # iamketan25/open-assistant-instructions
-        if exist_and_not_none(data, "prompt") and exist_and_not_none(data, "chosen"):
-            prompt = data["prompt"]
-            target = data["chosen"]
-            input_template = None  # do not modified with input template again
-        # pvduy/sharegpt_alpaca_oa_vicuna_format
-        elif exist_and_not_none(data, "prompt") and exist_and_not_none(data, "label"):
-            prompt = data["prompt"].replace("USER:", "").replace("ASSISTANT:", "")
-            target = data["label"].replace("</s>", "")
-        # BelleGroup/train_0.5M_CN
-        # LLMs/Alpaca-ShareGPT
-        # yahma/alpaca-cleaned
-        # QingyiSi/Alpaca-CoT
-        elif exist_and_not_none(data, "instruction") and exist_and_not_none(data, "output"):
-            input = " " + data["input"] if exist_and_not_none(data, "input") else ""
-            prompt = data["instruction"] + input
-            target = data["output"]
         # Open-Orca/OpenOrca
-        elif exist_and_not_none(data, "system_prompt") and exist_and_not_none(data, "response"):
-            prompt = data["system_prompt"] + "\n" + data["question"]
-            target = data["response"]
-        # crumb/gpt4all-clean
-        # nomic-ai/gpt4all-j-prompt-generations
-        elif exist_and_not_none(data, "prompt") and exist_and_not_none(data, "response"):
-            prompt = data["prompt"]
-            target = data["response"]
-        # EleutherAI/pile [pretrain !!!]
-        elif exist_and_not_none(data, "text") and exist_and_not_none(data, "meta"):
-            assert input_template is None  # pretrain_mode
-            prompt = ""
-            target = data["text"]
+        if exist_and_not_none(data, "system_prompt") and exist_and_not_none(data, "response"):
+            prompt = data["system_prompt"] + " " + data["question"]
+            response = data["response"]
+        # MaziyarPanahi/WizardLM_evol_instruct_V2_196k
+        # jondurbin/airoboros-3.2
+        elif exist_and_not_none(data, "conversations") and isinstance(data["conversations"], list):
+            prompt = process_multi_turn_dialogue(
+                data["conversations"][:-1], input_template=input_template, content_key="value", role_key="from"
+            )
+            response = data["conversations"][-1]["value"]
+            input_template = None  # do not modified with input template again
         # for batch_inference.py
         elif exist_and_not_none(data, "input") and exist_and_not_none(data, "output"):
             prompt = data["input"]
-            target = data["output"]
+            response = data["output"]
             input_template = None
         else:
             raise ValueError("Unknown SFT dataset")
@@ -53,7 +40,7 @@ def preprocess_data(data, input_template=None, input_key=None, output_key=None):
     # input template
     if input_template:
         prompt = input_template.format(prompt)
-    return prompt, target
+    return prompt, response
 
 
 class SFTDataset(Dataset):
@@ -77,7 +64,7 @@ class SFTDataset(Dataset):
     ) -> None:
         super().__init__()
         self.prompts = []
-        self.targets = []
+        self.responses = []
         self.prompt_ids_lens = []
         self.tokenizer = tokenizer
         self.strategy = strategy
@@ -85,9 +72,22 @@ class SFTDataset(Dataset):
         self.max_length = max_length
         input_key = getattr(self.strategy.args, "input_key", None)
         output_key = getattr(self.strategy.args, "output_key", None)
+        output_key = getattr(self.strategy.args, "output_key", None)
+        apply_chat_template = getattr(self.strategy.args, "apply_chat_template", False)
+        if apply_chat_template:
+            apply_chat_template = self.tokenizer.apply_chat_template
+            tokenizer_chat_template = getattr(self.strategy.args, "tokenizer_chat_template", None)
+            if tokenizer_chat_template:
+                self.tokenizer.chat_template = tokenizer_chat_template
 
         for data in tqdm(dataset, disable=not self.strategy.is_rank_0()):
-            prompt, target = preprocess_data(data, None if pretrain_mode else input_template, input_key, output_key)
+            prompt, response = preprocess_data(
+                data,
+                None if pretrain_mode else input_template,
+                input_key,
+                output_key,
+                apply_chat_template=apply_chat_template,
+            )
 
             if not self.pretrain_mode:
                 prompt_token = self.tokenizer(
@@ -105,12 +105,12 @@ class SFTDataset(Dataset):
                 # filter the sample whose length is greater than max_length (2 for answer length)
                 if prompt_ids_len >= self.max_length - 2:
                     continue
-                if not prompt or not target:
+                if not prompt or not response:
                     continue
 
             self.prompt_ids_lens.append(prompt_ids_len)
             self.prompts.append(prompt)
-            self.targets.append(target)
+            self.responses.append(response)
 
     def __len__(self):
         length = len(self.prompts)
@@ -119,16 +119,20 @@ class SFTDataset(Dataset):
     def __getitem__(self, idx):
         prompt_ids_len = self.prompt_ids_lens[idx]
         prompt = self.prompts[idx]
-        target = self.targets[idx]
+        response = self.responses[idx]
+
+        text = (prompt + response).rstrip("\n")
+        if not text.endswith(self.tokenizer.eos_token):
+            text += " " + self.tokenizer.eos_token
 
         input_token = self.tokenizer(
-            prompt + target + " " + self.tokenizer.eos_token,
+            text,
             max_length=self.max_length,
             padding=False,
             truncation=True,
             return_tensors="pt",
         )
-        info = {"input": prompt, "output": target}
+        info = {"input": prompt, "output": response}
         # to avoid EOS_token truncation
         input_token["input_ids"][0][-1] = self.tokenizer.eos_token_id
         input_token["attention_mask"][0][-1] = True

@@ -33,7 +33,6 @@ python3 examples/train_ppo_ray.py \
     --prompt_data_probs 0.4,0.5,0.1 \
     --max_samples 80000 \
     --normalize_reward \
-    --actor_init_on_gpu \
     --adam_offload \
     --gradient_checkpointing \
     --flash_attn \

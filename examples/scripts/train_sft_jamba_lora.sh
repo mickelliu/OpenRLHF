@@ -1,20 +1,22 @@
 set -x
 
+# Please note that the dependencies for Jamba are installed.
+# pip install mamba-ssm causal-conv1d>=1.2.0
+
 read -r -d '' training_commands <<EOF
 ../train_sft.py \
-    --max_len 2048 \
-    --dataset Open-Orca/OpenOrca \
+    --max_len 8192 \
+    --dataset MaziyarPanahi/WizardLM_evol_instruct_V2_196k \
     --dataset_probs 1.0 \
     --train_batch_size 128 \
     --micro_train_batch_size 4 \
-    --max_samples 500000 \
-    --pretrain mistralai/Mixtral-8x7B-v0.1 \
-    --save_path ./ckpt/mixtral_sft\
+    --pretrain ai21labs/Jamba-v0.1 \
+    --save_path ./ckpt/jamba_wizard\
     --save_steps -1 \
     --logging_steps 1 \
     --eval_steps -1 \
     --zero_stage 3 \
-    --max_epochs 1 \
+    --max_epochs 2 \
     --bf16 \
     --gradient_checkpointing \
     --flash_attn \
@@ -25,5 +27,6 @@ read -r -d '' training_commands <<EOF
 EOF
 
 if [[ ${1} != "slurm" ]]; then
+    export PATH=$HOME/.local/bin/:$PATH
     deepspeed $training_commands
 fi

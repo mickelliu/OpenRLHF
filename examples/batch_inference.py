@@ -29,7 +29,13 @@ def batch_generate_vllm(args):
     tokenizer = AutoTokenizer.from_pretrained(args.pretrain, trust_remote_code=True)
 
     # configure model
-    llm = LLM(model=args.pretrain, tensor_parallel_size=args.tp_size, trust_remote_code=True, seed=args.seed)
+    llm = LLM(
+        model=args.pretrain,
+        tensor_parallel_size=args.tp_size,
+        trust_remote_code=True,
+        seed=args.seed,
+        max_num_seqs=args.max_num_seqs,
+    )
 
     # Create a sampling params object.
     sampling_params = SamplingParams(
@@ -68,12 +74,11 @@ def batch_generate_vllm(args):
     N = args.best_of_n
     output_dataset = []
 
-    for _ in range(N):
-        outputs = llm.generate(prompts, sampling_params)
-        for output in outputs:
-            prompt = output.prompt
-            output = output.outputs[0].text
-            output_dataset.append({"input": prompt, "output": output})
+    outputs = llm.generate(prompts * N, sampling_params)
+    for output in outputs:
+        prompt = output.prompt
+        output = output.outputs[0].text
+        output_dataset.append({"input": prompt, "output": output})
 
     with jsonlines.open(args.output_path, mode="w") as writer:
         writer.write_all(output_dataset)
@@ -90,8 +95,6 @@ def batch_generate(args):
         use_flash_attention_2=args.flash_attn,
         bf16=args.bf16,
     )
-    if args.to_bettertransformer:
-        model.to_bettertransformer()
 
     # configure tokenizer
     tokenizer = get_tokenizer(args.pretrain, model.model, "left", strategy, use_fast=not args.disable_fast_tokenizer)
@@ -202,6 +205,7 @@ def batch_rm_inference(args):
         normalize_reward=True,
         use_flash_attention_2=args.flash_attn,
         bf16=args.bf16,
+        head_prefix=args.head_prefix,
     )
 
     # configure tokenizer
@@ -289,16 +293,18 @@ if __name__ == "__main__":
     parser.add_argument("--output_path", type=str, default=None)
     parser.add_argument("--max_samples", type=int, default=1000000)
     parser.add_argument("--seed", type=int, default=1234)
+    # reward model
+    parser.add_argument("--head_prefix", type=str, default="value_head")
 
     # custom dataset key name
     parser.add_argument("--input_key", type=str, default=None)
     parser.add_argument("--output_key", type=str, default=None)
+    parser.add_argument("--apply_chat_template", action="store_true", default=False)
 
     # for generation
     parser.add_argument("--ta_prompt", type=str, default=None)
     parser.add_argument("--prompt_max_len", type=int, default=1024)
     parser.add_argument("--greedy_sampling", action="store_true", default=False)
-    parser.add_argument("--to_bettertransformer", action="store_true", default=False)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--repetition_penalty", type=float, default=1.2)
@@ -309,10 +315,11 @@ if __name__ == "__main__":
         "--post_processor",
         type=str,
         default=None,
-        help="set to rs (Rejection Sampling), ca (Conditional SFT) or None",
+        help="set to rs (Rejection Sampling), ca (Conditional SFT), iter_dpo (Iterative DPO) or None",
     )
     # for vllm
     parser.add_argument("--tp_size", type=int, default=8)
+    parser.add_argument("--max_num_seqs", type=int, default=256)
 
     # for Iterative generation and Rejection Sampling
     parser.add_argument("--iter", type=int, default=None)

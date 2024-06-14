@@ -28,8 +28,10 @@ def train(args):
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         target_modules=args.target_modules,
+        lora_dropout=args.lora_dropout,
         ds_config=strategy.get_ds_train_config(is_actor=False),
         init_value_head=True,
+        head_prefix=args.head_prefix,
     )
 
     # configure tokenizer
@@ -151,20 +153,20 @@ if __name__ == "__main__":
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
-    parser.add_argument("--target_modules", type=list, default=None)
-    parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
+    parser.add_argument("--lora_dropout", type=float, default=0)
+    parser.add_argument("--target_modules", type=str, nargs="*", default="all-linear")
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true")
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
-    parser.add_argument("--bos_token", type=str, default=None)
-    parser.add_argument("--eos_token", type=str, default=None)
-    parser.add_argument("--pad_token", type=str, default=None)
-    parser.add_argument("--unk_token", type=str, default=None)
+    # reward model
+    parser.add_argument("--head_prefix", type=str, default="value_head")
 
     # custom dataset key name
     parser.add_argument("--prompt_key", type=str, default=None)
     parser.add_argument("--chosen_key", type=str, default=None)
     parser.add_argument("--rejected_key", type=str, default=None)
+    parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
+    parser.add_argument("--apply_chat_template", action="store_true", default=False)
 
     # wandb pamameters
     parser.add_argument("--use_wandb", type=str, default=None)

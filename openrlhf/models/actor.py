@@ -4,14 +4,12 @@ import deepspeed
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from optimum.bettertransformer import BetterTransformer
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.tuners.lora import LoraLayer
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig, PreTrainedModel
 from transformers.deepspeed import HfDeepSpeedConfig
-from transformers.models.mixtral.modeling_mixtral import MixtralSparseMoeBlock
 
-from .utils import find_all_linear_names, log_probs_from_logits
+from .utils import log_probs_from_logits
 
 
 class Actor(nn.Module):
@@ -32,8 +30,11 @@ class Actor(nn.Module):
         load_in_4bit=False,
         lora_rank=0,
         lora_alpha=16,
+        lora_dropout=0,
         target_modules=None,
         ds_config=None,
+        device_map=None,
+        **kwargs,
     ) -> None:
         super().__init__()
 
@@ -41,7 +42,7 @@ class Actor(nn.Module):
             attn_implementation = "flash_attention_2" if use_flash_attention_2 else "eager"
 
             # Note: dschf is defined in function scope to avoid global effects
-            # https://huggingface.co/docs/transformers/main_classes/deepspeed#nontrainer-deepspeed-integration
+            # https://huggingface.co/docs/transformers/deepspeed#non-trainer-deepspeed-integration
             if ds_config is not None and ds_config["zero_optimization"]["stage"] == 3:
                 dschf = HfDeepSpeedConfig(ds_config)
             else:
@@ -63,7 +64,8 @@ class Actor(nn.Module):
                 trust_remote_code=True,
                 attn_implementation=attn_implementation,
                 quantization_config=nf4_config,
-                torch_dtype="auto",
+                torch_dtype=torch.bfloat16 if bf16 else "auto",
+                device_map=device_map,
             )
 
             # LoRA
@@ -74,8 +76,8 @@ class Actor(nn.Module):
                     task_type=TaskType.CAUSAL_LM,
                     r=lora_rank,
                     lora_alpha=lora_alpha,
-                    target_modules=target_modules or find_all_linear_names(self.model, load_in_4bit),
-                    lora_dropout=0,
+                    target_modules=target_modules,
+                    lora_dropout=lora_dropout,
                     bias="none",
                 )
                 self.model = get_peft_model(self.model, lora_config)
@@ -90,11 +92,12 @@ class Actor(nn.Module):
                             if hasattr(module, "weight"):
                                 module = module.to(torch.bfloat16)
 
-            # Mixtral 8x7b - balancing loss
-            if "output_router_logits" in self.model.config.to_dict():
-                print("[Mixtral 8x7b] set output_router_logits as True")
+            # MoE - balancing loss
+            model_config = self.model.config.to_dict()
+            if "output_router_logits" in model_config:
+                print("[MoE] set output_router_logits as True")
                 self.model.config.output_router_logits = True
-                deepspeed.utils.set_z3_leaf_modules(self.model, [MixtralSparseMoeBlock])
+
         else:
             self.model = pretrain_or_model
 
@@ -147,7 +150,13 @@ class Actor(nn.Module):
         #             break
         #
         eos_indices = seq_length - attention_mask.long().fliplr().argmax(dim=1, keepdim=True).clamp(min=1)
-        attention_mask.scatter_(dim=1, index=eos_indices, value=1)
+        first_token_indices = attention_mask.long().argmax(dim=1, keepdim=True)
+
+        # For Llama3 and Qwen2 models, there are some eos_tokens in the middle of the prompt.
+        mask = torch.arange(seq_length).unsqueeze(0).expand(sequences.size(0), -1)
+        mask = (mask <= eos_indices) & (mask >= first_token_indices)
+
+        attention_mask.masked_fill_(mask, 1)
         sequences.scatter_(dim=1, index=eos_indices, value=eos_token_id)
 
         # in RL, state_i (current token) + action_i (next token) -> state_i+1 (next token)
@@ -180,12 +189,6 @@ class Actor(nn.Module):
 
     def gradient_checkpointing_disable(self):
         self.model.gradient_checkpointing_disable()
-
-    def to_bettertransformer(self):
-        self.model = BetterTransformer.transform(self.model)
-
-    def reverse_bettertransformer(self):
-        self.model = BetterTransformer.reverse(self.model)
 
     def print_trainable_parameters(self):
         self.model.print_trainable_parameters()

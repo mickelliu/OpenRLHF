@@ -12,19 +12,8 @@ DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
 
-def get_sp_tokens(args):
-    sp_tokens = dict()
-    for key in ("bos_token", "eos_token", "pad_token", "unk_token"):
-        sp_token = getattr(args, key, None)
-        if sp_token is not None:
-            sp_tokens[key] = sp_token
-    return sp_tokens
-
-
 def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=True):
-    sp_tokens = get_sp_tokens(strategy.args)
-
-    tokenizer = AutoTokenizer.from_pretrained(pretrain, trust_remote_code=True, use_fast=use_fast, **sp_tokens)
+    tokenizer = AutoTokenizer.from_pretrained(pretrain, trust_remote_code=True, use_fast=use_fast)
     tokenizer.padding_side = padding_side
     # NOTE: When enable vLLM, do not resize_token_embeddings, or the vocab size will mismatch with vLLM.
     # https://github.com/facebookresearch/llama-recipes/pull/196
@@ -113,14 +102,15 @@ def blending_datasets(
             train_data_list.append(data.select(range(min(max_count, len(data)))))  # train will contains eval? TODO
 
         if return_eval:
+            max_count01 = int(max_count * 0.1)
             if "test" in data:
-                eval_data = data["test"].select(range(min(int(max_count * 0.1), len(data["test"]))))
+                eval_data = data["test"].select(range(min(max_count01, len(data["test"]))))
             elif "validation" in data:
-                eval_data = data["validation"].select(range(min(int(max_count * 0.1), len(data["validation"]))))
+                eval_data = data["validation"].select(range(min(max_count01, len(data["validation"]))))
             elif "train" in data:
-                eval_data = data["train"].select(range(min(int(max_count * 0.1), int(len(data["train"]) * 0.01))))
+                eval_data = data["train"].select(range(min(max_count01, int(len(data["train"]) * 0.01))))
             else:
-                eval_data = data.select(range(min(int(max_count * 0.1), int(len(data) * 0.001))))
+                eval_data = data.select(range(min(int(max_count01), int(len(data) * 0.01))))
             eval_data_list.append(eval_data)
 
     # merge datasets

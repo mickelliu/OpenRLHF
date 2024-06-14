@@ -189,8 +189,9 @@ class DPOTrainer(ABC):
                 desc="Eval stage of global_step %d" % steps,
                 disable=not self.strategy.is_rank_0(),
             )
-            acc = 0
+            acc_sum = 0
             loss_sum = 0
+            times = 0
             for chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens in eval_dataloader:
                 chosen_ids = chosen_ids.squeeze(1).to(torch.cuda.current_device())
                 c_mask = c_mask.squeeze(1).to(torch.cuda.current_device())
@@ -206,19 +207,18 @@ class DPOTrainer(ABC):
                 loss, chosen_reward, reject_reward = self.loss_fn(
                     chosen_logps, rejected_logps, reference_chosen_logps, reference_rejected_logps
                 )
-                acc += (chosen_reward > reject_reward).float().mean().item()
+                acc_sum += (chosen_reward > reject_reward).float().mean().item()
                 loss_sum += loss.item()
+                times += 1
+
+                logs = {
+                    "eval_loss": loss_sum / times,
+                    "acc_mean": acc_sum / times,
+                }
+                logs = self.strategy.all_reduce(logs)
+                step_bar.set_postfix(logs)
                 step_bar.update()
 
-            acc_mean = acc / self.eval_dataloader.__len__()
-            loss_mean = loss_sum / self.eval_dataloader.__len__()
-
-            logs = {
-                "eval_loss": loss_mean,
-                "acc_mean": acc_mean,
-            }
-            logs = self.strategy.all_reduce(logs)
-            step_bar.set_postfix(logs)
             if self._wandb is not None and self.strategy.is_rank_0():
                 logs = {"eval/%s" % k: v for k, v in {**logs, "global_step": steps}.items()}
                 self._wandb.log(logs)
@@ -229,7 +229,9 @@ class DPOTrainer(ABC):
 
         We do this to avoid doing two forward passes, because it's faster for FSDP.
         """
-        input_ids, att_masks = self.concatenated_inputs(chosen_ids, c_mask, reject_ids, r_mask)
+        input_ids, att_masks, prompt_id_lens = self.concatenated_inputs(
+            chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
+        )
         output = model(input_ids, attention_mask=att_masks, return_output=True)
         all_logits = output["logits"]
         all_logps = self._get_batch_logps(all_logits, input_ids, att_masks, prompt_id_lens, average_log_prob=False)
@@ -238,7 +240,7 @@ class DPOTrainer(ABC):
         aux_loss = output.aux_loss if "aux_loss" in output else []
         return chosen_logps, rejected_logps, aux_loss
 
-    def concatenated_inputs(self, chosen_ids, c_mask, reject_ids, r_mask):
+    def concatenated_inputs(self, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens):
         """Concatenate the chosen and rejected inputs into a single tensor.
 
         Args:
@@ -268,7 +270,7 @@ class DPOTrainer(ABC):
         )
         max_length = max(c_mask.shape[1], r_mask.shape[1])
         att_masks = torch.cat((pad_to_length(c_mask, max_length, 0), pad_to_length(r_mask, max_length, 0)), dim=0)
-        return inputs_ids, att_masks
+        return inputs_ids, att_masks, prompt_id_lens * 2
 
     def _get_batch_logps(
         self,

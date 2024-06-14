@@ -75,8 +75,9 @@ class CriticModelRayActor(BasePPORole):
             lora_rank=strategy.args.lora_rank,
             lora_alpha=strategy.args.lora_alpha,
             target_modules=strategy.args.target_modules,
+            lora_dropout=strategy.args.lora_dropout,
             ds_config=strategy.get_ds_train_config(is_actor=False),
-            value_head_name=strategy.args.value_head_name
+            head_prefix=strategy.args.head_prefix,
         )
         # configure tokenizer
         self.tokenizer = get_tokenizer(
@@ -163,6 +164,9 @@ class CriticModelRayActor(BasePPORole):
         self.trainer.replay_buffer.clear()
         torch.cuda.empty_cache()
         return status
+
+    def empty_cache(self) -> None:
+        torch.cuda.empty_cache()
 
     def save_model(self, path: str=None):
         # save model checkpoint after fitting on only rank0

@@ -96,7 +96,7 @@ def train(args):
         gpu_type=args.ref_gpu_type,
     )
 
-    # if colocated, create placement group for reference and reward model explicitly.
+    # if colocated, create placement group for critic and reward model explicitly.
     pg = None
     if args.colocate_critic_reward:
         assert (
@@ -213,6 +213,7 @@ if __name__ == "__main__":
         default=1,
         help="tensor parallel size of vLLM Engine for multi-GPU inference",
     )
+    parser.add_argument("--vllm_sync_backend", type=str, default="nccl", help="DeepSpeed -> vLLM weight sync backend")
 
     parser.add_argument("--prompt_data", type=str, default=None)
     parser.add_argument(
@@ -244,7 +245,6 @@ if __name__ == "__main__":
     parser.add_argument("--max_norm", type=float, default=1.0)
     parser.add_argument("--l2", type=float, default=0.0)
     parser.add_argument("--value_loss_coef", type=float, default=1.0)
-    parser.add_argument("--value_head_name", type=str, default="value_head", help="value head name in critic and reward model")
     parser.add_argument("--ptx_coef", type=float, default=0.05)
     parser.add_argument("--eps_clip", type=float, default=0.2)
     parser.add_argument("--value_clip", type=float, default=0.2)
@@ -270,7 +270,6 @@ if __name__ == "__main__":
     parser.add_argument("--enable_ema", action="store_true", help="Enable EMA checkpoint for the model.")
     parser.add_argument("--zpg", type=int, default=1, help="ZeRO++ max partition size")
     parser.add_argument("--adam_offload", action="store_true", default=False)
-    parser.add_argument("--ref_reward_offload", action="store_true", default=False)
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
     parser.add_argument("--flash_attn", action="store_true", default=False)
     parser.add_argument("--aux_loss_coef", type=float, default=0)
@@ -279,21 +278,20 @@ if __name__ == "__main__":
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
-    parser.add_argument("--target_modules", type=list, default=None)
-    # parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
-    # parser.add_argument("--input_template", type=str, default="<|user|> {} <|assistant|>\n")
-    parser.add_argument("--input_template", type=str, default="<|user|>\n{}\n<|assistant|>\n")
-    parser.add_argument("--ultrarm_shift_template", action="store_true", default=False)
+    parser.add_argument("--target_modules", type=str, nargs="*", default="all-linear")
+    parser.add_argument("--lora_dropout", type=float, default=0)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true")
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
-    parser.add_argument("--bos_token", type=str, default=None)
-    parser.add_argument("--eos_token", type=str, default=None)
-    parser.add_argument("--pad_token", type=str, default=None)
-    parser.add_argument("--unk_token", type=str, default=None)
+    # reward model
+    parser.add_argument("--head_prefix", type=str, default="value_head")
+    parser.add_argument("--ref_reward_offload", action="store_true", default=False)
 
     # custom dataset key name
     parser.add_argument("--input_key", type=str, default=None)
+    parser.add_argument("--input_template", type=str, default="<|user|>\n{}\n<|assistant|>\n")
+    parser.add_argument("--ultrarm_shift_template", action="store_true", default=False)
+    parser.add_argument("--apply_chat_template", action="store_true", default=False)
 
     # evaluation
     parser.add_argument("--eval_steps", type=int, default=-1)
